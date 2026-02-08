@@ -274,6 +274,32 @@ This script only supports Ubuntu and Debian. For other distributions, adapt the 
 
 ---
 
+## Private Container Registries
+
+If you're pulling images from private registries (like GitHub Container Registry), you'll need to authenticate after setup:
+
+### GitHub Container Registry (ghcr.io)
+
+```bash
+# Generate a Personal Access Token at https://github.com/settings/tokens
+# with 'read:packages' scope, then:
+echo "YOUR_GITHUB_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+```
+
+This stores credentials in `~/.docker/config.json` and persists across reboots.
+
+### Other Registries
+
+```bash
+# Amazon ECR
+aws ecr get-login-password | docker login --username AWS --password-stdin YOUR_ECR_URL
+
+# Docker Hub (private repos)
+docker login -u YOUR_USERNAME
+```
+
+---
+
 ## Files Created/Modified
 
 | Path | Purpose |
@@ -282,6 +308,7 @@ This script only supports Ubuntu and Debian. For other distributions, adapt the 
 | `/etc/vps-setup-mode` | Stored mode (public/private) |
 | `/etc/profile.d/vps-setup-update-check.sh` | Login update checker |
 | `/etc/ssh/sshd_config.backup` | Original SSH config backup |
+| `/etc/ssh/sshd_config.d/00-vps-hardening.conf` | SSH hardening (key-only, no root) |
 | `/etc/sudoers.d/admin` | Passwordless sudo for admin user |
 | `/etc/iptables/rules.v4` | Saved IPv4 firewall rules |
 | `/etc/iptables/rules.v6` | Saved IPv6 firewall rules |
