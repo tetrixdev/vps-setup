@@ -196,7 +196,7 @@ The script installs an update checker that runs on login. When a new version is 
   curl -O https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh && sudo bash setup.sh
 ```
 
-The script is idempotent — safe to re-run without disruption.
+The script is idempotent — safe to re-run without disruption. Custom iptables rules are preserved. Note that `/etc/docker/daemon.json` and SSH hardening config are overwritten on each run.
 
 ---
 
