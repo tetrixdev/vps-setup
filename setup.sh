@@ -358,7 +358,12 @@ if ! sshd -t 2>/dev/null; then
 fi
 
 # Restart SSH (existing sessions stay alive)
-systemctl restart sshd
+# Ubuntu uses 'ssh' service, Debian uses 'sshd'
+if systemctl list-units --type=service | grep -q 'ssh.service'; then
+    systemctl restart ssh
+else
+    systemctl restart sshd
+fi
 
 log_info "SSH hardened: password auth disabled, root login disabled"
 
