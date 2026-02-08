@@ -7,15 +7,14 @@
 # private development environments.
 #
 # USAGE:
-#   ./setup.sh --mode=public              Public web server (ports 22, 80, 443)
-#   ./setup.sh --mode=private             Private server (Tailscale-only)
-#   ./setup.sh --mode=public --username=X Specify username to create
+#   ./setup.sh --mode=public   Public web server (ports 22, 80, 443)
+#   ./setup.sh --mode=private  Private server (Tailscale-only)
 #
 # WHAT IT DOES:
 #   1. Updates system and enables automatic security patches
 #   2. Installs Docker with log rotation
 #   3. Hardens SSH (key-only auth, no root login)
-#   4. Creates/configures a non-root user with sudo and docker access
+#   4. Creates 'admin' user with sudo and docker access
 #   5. Configures iptables firewall
 #   6. Creates swap file (if none exists)
 #
@@ -53,7 +52,7 @@ log_step() { echo -e "\n${BLUE}==>${NC} $1"; }
 # Parse arguments
 # -----------------------------------------------------------------------------
 MODE=""
-USERNAME=""
+USERNAME="admin"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -79,33 +78,16 @@ while [[ $# -gt 0 ]]; do
             fi
             shift
             ;;
-        --username)
-            if [ -z "$2" ] || [[ "$2" == -* ]]; then
-                log_error "--username requires a value"
-                exit 1
-            fi
-            USERNAME="$2"
-            shift 2
-            ;;
-        --username=*)
-            USERNAME="${1#*=}"
-            shift
-            ;;
         -h|--help)
-            echo "Usage: $0 --mode=<public|private> [OPTIONS]"
+            echo "Usage: $0 --mode=<public|private>"
             echo ""
-            echo "Required:"
+            echo "Modes:"
             echo "  --mode=public   Open ports 22, 80, 443 to the internet"
             echo "  --mode=private  Tailscale-only access (all public ports blocked)"
             echo ""
-            echo "Options:"
-            echo "  --username=X    Username to create (auto-detects existing user if not provided)"
-            echo "  -h, --help      Show this help"
-            echo ""
             echo "Examples:"
-            echo "  $0 --mode=public                    # Public web server"
-            echo "  $0 --mode=private                   # Private dev server"
-            echo "  $0 --mode=public --username=deploy  # Public with specific user"
+            echo "  $0 --mode=public   # Public web server"
+            echo "  $0 --mode=private  # Private dev server"
             exit 0
             ;;
         *)
@@ -183,32 +165,6 @@ fi
 log_info "Detected: $DISTRO_ID $DISTRO_CODENAME"
 log_info "Mode: $MODE"
 
-# -----------------------------------------------------------------------------
-# User detection: find existing user or require --username
-# -----------------------------------------------------------------------------
-# Find existing non-root users (UID >= 1000, real shell, not nobody)
-detect_existing_user() {
-    getent passwd | awk -F: '$3 >= 1000 && $3 != 65534 && $7 !~ /nologin|false/ {print $1}' | head -1
-}
-
-EXISTING_USER=$(detect_existing_user)
-
-if [ -n "$USERNAME" ]; then
-    # Username explicitly provided
-    log_info "Using specified username: $USERNAME"
-elif [ -n "$EXISTING_USER" ]; then
-    # Found existing user
-    USERNAME="$EXISTING_USER"
-    log_info "Detected existing user: $USERNAME"
-else
-    # No user provided and none exists
-    log_error "No existing non-root user found and --username not provided."
-    echo ""
-    echo "Specify a username to create:"
-    echo "  $0 --mode=$MODE --username=deploy"
-    exit 1
-fi
-
 # Check for SSH key before we lock out password auth
 if [ ! -f /root/.ssh/authorized_keys ] || [ ! -s /root/.ssh/authorized_keys ]; then
     log_error "No SSH keys found in /root/.ssh/authorized_keys"
@@ -250,7 +206,7 @@ if [ "$MODE" = "private" ]; then
     echo "  1. Update system and enable automatic security updates"
     echo "  2. Install Docker with log rotation"
     echo "  3. Harden SSH (key-only, no root login)"
-    echo "  4. Configure user '$USERNAME' with sudo + docker access"
+    echo "  4. Configure 'admin' user with sudo + docker access"
     echo "  5. Configure firewall (Tailscale-only, all public ports blocked)"
     echo "  6. Create 2GB swap file"
     echo ""
@@ -263,7 +219,7 @@ else
     echo "  1. Update system and enable automatic security updates"
     echo "  2. Install Docker with log rotation"
     echo "  3. Harden SSH (key-only, no root login)"
-    echo "  4. Configure user '$USERNAME' with sudo + docker access"
+    echo "  4. Configure 'admin' user with sudo + docker access"
     echo "  5. Configure firewall (allow SSH, HTTP, HTTPS only)"
     echo "  6. Create 2GB swap file"
 fi
@@ -382,15 +338,6 @@ PermitRootLogin no
 PubkeyAuthentication yes
 PermitEmptyPasswords no
 EOF
-
-# Remove conflicting settings from cloud-init's drop-in (if it exists)
-# This prevents cloud-init from overriding our hardening on reboot
-CLOUD_INIT_SSH="/etc/ssh/sshd_config.d/50-cloud-init.conf"
-if [ -f "$CLOUD_INIT_SSH" ]; then
-    log_info "Removing conflicting settings from cloud-init SSH config..."
-    sed -i '/^PasswordAuthentication/d' "$CLOUD_INIT_SSH"
-    sed -i '/^PermitRootLogin/d' "$CLOUD_INIT_SSH"
-fi
 
 # Verify sshd config is valid before restarting
 if ! sshd -t 2>/dev/null; then
@@ -665,7 +612,7 @@ if [ "$MODE" = "private" ]; then
     echo "  ✓ Automatic security updates"
     echo "  ✓ Docker with log rotation (50MB × 5 files per container)"
     echo "  ✓ SSH: key-only, no root login"
-    echo "  ✓ User '$USERNAME' with sudo + docker"
+    echo "  ✓ User 'admin' with sudo + docker"
     echo "  ✓ Firewall: Tailscale-only (all public ports blocked)"
     echo "  ✓ 2GB swap file"
     echo ""
@@ -676,7 +623,7 @@ else
     echo "  ✓ Automatic security updates"
     echo "  ✓ Docker with log rotation (50MB × 5 files per container)"
     echo "  ✓ SSH: key-only, no root login"
-    echo "  ✓ User '$USERNAME' with sudo + docker"
+    echo "  ✓ User 'admin' with sudo + docker"
     echo "  ✓ Firewall: ports 22, 80, 443 + Tailscale"
     echo "  ✓ 2GB swap file"
     echo ""

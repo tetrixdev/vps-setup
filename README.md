@@ -23,7 +23,7 @@ If you just want to deploy containers safely and don't want to worry about accid
 | 1 | Updates system, enables automatic security patches |
 | 2 | Installs Docker with log rotation (50MB × 5 files per container) |
 | 3 | Hardens SSH (key-only auth, disables root login) |
-| 4 | Creates/configures non-root user with sudo + docker access |
+| 4 | Creates `admin` user with sudo + docker access |
 | 5 | Configures iptables firewall (whitelist approach) |
 | 6 | Creates 2GB swap file |
 
@@ -76,7 +76,7 @@ chmod +x setup.sh
 **Before closing your root session**, open a new terminal and verify:
 
 ```bash
-ssh deploy@<your-server-ip>
+ssh admin@<your-server-ip>
 ```
 
 If it works, you're done! Root login is now disabled.
@@ -112,7 +112,7 @@ tailscale ip -4
 After setup, you can only reach the server through Tailscale:
 
 ```bash
-ssh deploy@<tailscale-ip>
+ssh admin@<tailscale-ip>
 ```
 
 The public IP will be completely unreachable.
@@ -122,25 +122,18 @@ The public IP will be completely unreachable.
 ## Usage
 
 ```text
-./setup.sh --mode=<public|private> [OPTIONS]
+./setup.sh --mode=<public|private>
 
-Required (first run):
+Modes:
   --mode=public   Open ports 22, 80, 443 to the internet
   --mode=private  Tailscale-only access (all public ports blocked)
-
-Options:
-  --username=X    Username to create (auto-detects existing user if not provided)
-  -h, --help      Show help
 ```
 
 ### Examples
 
 ```bash
-# Public web server (first run)
+# Public web server
 ./setup.sh --mode=public
-
-# Public with specific username
-./setup.sh --mode=public --username=deploy
 
 # Private dev server
 ./setup.sh --mode=private
@@ -148,13 +141,6 @@ Options:
 # Re-run (uses stored mode)
 ./setup.sh
 ```
-
-### User Detection
-
-If `--username` is not provided:
-1. Script looks for an existing non-root user (UID ≥ 1000 with a real shell)
-2. If found, uses that user
-3. If not found, exits with error asking you to specify `--username`
 
 ### Mode Persistence
 
@@ -263,7 +249,7 @@ Log out and back in after running the script:
 
 ```bash
 exit
-ssh deploy@<server-ip>
+ssh admin@<server-ip>
 docker ps  # Should work now
 ```
 
@@ -298,7 +284,7 @@ This script only supports Ubuntu and Debian. For other distributions, adapt the 
 | `/etc/vps-setup-mode` | Stored mode (public/private) |
 | `/etc/profile.d/vps-setup-update-check.sh` | Login update checker |
 | `/etc/ssh/sshd_config.backup` | Original SSH config backup |
-| `/etc/sudoers.d/<username>` | Passwordless sudo for user |
+| `/etc/sudoers.d/admin` | Passwordless sudo for admin user |
 | `/etc/iptables/rules.v4` | Saved IPv4 firewall rules |
 | `/etc/iptables/rules.v6` | Saved IPv6 firewall rules |
 | `/etc/docker/daemon.json` | Docker log rotation config |
