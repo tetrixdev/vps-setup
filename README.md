@@ -291,6 +291,8 @@ ssh -o SendEnv=GITHUB_TOKEN admin@server \
 
 The token is never visible in commands or logs — it's forwarded securely via SSH.
 
+> **Security note:** The server is configured with `AcceptEnv *` to allow any environment variable to be forwarded. This is intentional and safe in this security model: SSH access requires key-based authentication (passwords disabled), and the admin user has passwordless sudo. Anyone with SSH access already has full root privileges — accepting environment variables doesn't expand the attack surface.
+
 **Option 2: Manual login**
 
 ```bash

@@ -57,7 +57,7 @@ USERNAME="admin"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --mode)
-            if [ -z "$2" ] || [[ "$2" == -* ]]; then
+            if [ -z "${2:-}" ] || [[ "${2:-}" == -* ]]; then
                 log_error "--mode requires a value (public or private)"
                 exit 1
             fi
@@ -430,8 +430,7 @@ ipt6_add() {
 # -----------------------------------------------------------------------------
 log_info "Configuring IPv4 firewall rules..."
 
-# Set policies
-iptables -P INPUT DROP
+# Set policies (DROP policies set AFTER rules to avoid lockout on failure)
 iptables -P OUTPUT ACCEPT
 iptables -P FORWARD DROP
 
@@ -454,6 +453,9 @@ if [ "$MODE" = "public" ]; then
     ipt_add INPUT -p tcp --dport 80 -j ACCEPT
     ipt_add INPUT -p tcp --dport 443 -j ACCEPT
 fi
+
+# Now set INPUT policy to DROP (after rules are in place)
+iptables -P INPUT DROP
 
 # -----------------------------------------------------------------------------
 # DOCKER-USER chain (container access control)
@@ -495,8 +497,7 @@ ipt_add DOCKER-USER -j DROP
 # -----------------------------------------------------------------------------
 log_info "Configuring IPv6 firewall rules..."
 
-# Set policies
-ip6tables -P INPUT DROP
+# Set policies (DROP policies set AFTER rules to avoid lockout on failure)
 ip6tables -P OUTPUT ACCEPT
 ip6tables -P FORWARD DROP
 
@@ -512,6 +513,9 @@ if [ "$MODE" = "public" ]; then
     ipt6_add INPUT -p tcp --dport 80 -j ACCEPT
     ipt6_add INPUT -p tcp --dport 443 -j ACCEPT
 fi
+
+# Now set INPUT policy to DROP (after rules are in place)
+ip6tables -P INPUT DROP
 
 # IPv6 DOCKER-USER chain (container access control)
 ip6tables -N DOCKER-USER 2>/dev/null || true
