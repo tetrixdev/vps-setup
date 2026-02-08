@@ -276,17 +276,30 @@ This script only supports Ubuntu and Debian. For other distributions, adapt the 
 
 ## Private Container Registries
 
-If you're pulling images from private registries (like GitHub Container Registry), you'll need to authenticate after setup:
+If you're pulling images from private registries (like GitHub Container Registry), you'll need to authenticate after setup.
 
 ### GitHub Container Registry (ghcr.io)
+
+**Option 1: Forward token via SSH (recommended for automation)**
+
+The server accepts forwarded environment variables. If you have `GITHUB_TOKEN` set locally:
+
+```bash
+ssh -o SendEnv=GITHUB_TOKEN admin@server \
+  'echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin'
+```
+
+The token is never visible in commands or logs — it's forwarded securely via SSH.
+
+**Option 2: Manual login**
 
 ```bash
 # Generate a Personal Access Token at https://github.com/settings/tokens
 # with 'read:packages' scope, then:
-echo "YOUR_GITHUB_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+echo "YOUR_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
 ```
 
-This stores credentials in `~/.docker/config.json` and persists across reboots.
+Both options store credentials in `~/.docker/config.json` (persists across reboots).
 
 ### Other Registries
 

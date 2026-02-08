@@ -344,6 +344,10 @@ PasswordAuthentication no
 PermitRootLogin no
 PubkeyAuthentication yes
 PermitEmptyPasswords no
+
+# Allow forwarding environment variables (for tokens, etc.)
+# Client must explicitly send with: ssh -o SendEnv=VAR_NAME
+AcceptEnv *
 EOF
 
 # Verify sshd config is valid before restarting
