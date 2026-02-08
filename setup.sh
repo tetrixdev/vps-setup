@@ -6,22 +6,23 @@
 # Secures a fresh Ubuntu/Debian server for hosting web applications or
 # private development environments.
 #
-# MODES:
-#   ./setup.sh            Public web server (ports 22, 80, 443 open)
-#   ./setup.sh --private  Private server (Tailscale-only access)
+# USAGE:
+#   ./setup.sh --mode=public              Public web server (ports 22, 80, 443)
+#   ./setup.sh --mode=private             Private server (Tailscale-only)
+#   ./setup.sh --mode=public --username=X Specify username to create
 #
 # WHAT IT DOES:
 #   1. Updates system and enables automatic security patches
 #   2. Installs Docker with log rotation
 #   3. Hardens SSH (key-only auth, no root login)
-#   4. Creates a non-root user with sudo and docker access
+#   4. Creates/configures a non-root user with sudo and docker access
 #   5. Configures iptables firewall
 #   6. Creates swap file (if none exists)
 #
 # PREREQUISITES:
 #   - Fresh Ubuntu 24.04 or Debian 12 server
 #   - SSH key already added (you'll be locked out without one!)
-#   - For --private mode: Tailscale installed and connected first
+#   - For --mode=private: Tailscale installed and connected first
 #
 # REPOSITORY: https://github.com/tetrixdev/vps-setup
 #
@@ -31,6 +32,7 @@ set -e  # Exit on any error
 
 SCRIPT_VERSION="1.0.0"
 VERSION_FILE="/etc/vps-setup-version"
+MODE_FILE="/etc/vps-setup-mode"
 UPDATE_CHECK_SCRIPT="/etc/profile.d/vps-setup-update-check.sh"
 
 # -----------------------------------------------------------------------------
@@ -50,24 +52,22 @@ log_step() { echo -e "\n${BLUE}==>${NC} $1"; }
 # -----------------------------------------------------------------------------
 # Parse arguments
 # -----------------------------------------------------------------------------
-PRIVATE_MODE=false
-SKIP_USER_CREATION=false
-SKIP_CONFIRM=false
-USERNAME="deploy"
+MODE=""
+USERNAME=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --private)
-            PRIVATE_MODE=true
+        --mode=public)
+            MODE="public"
             shift
             ;;
-        --skip-user)
-            SKIP_USER_CREATION=true
+        --mode=private)
+            MODE="private"
             shift
             ;;
-        -y|--yes)
-            SKIP_CONFIRM=true
-            shift
+        --mode)
+            MODE="$2"
+            shift 2
             ;;
         --username)
             USERNAME="$2"
@@ -78,18 +78,25 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [OPTIONS]"
+            echo "Usage: $0 --mode=<public|private> [OPTIONS]"
+            echo ""
+            echo "Required:"
+            echo "  --mode=public   Open ports 22, 80, 443 to the internet"
+            echo "  --mode=private  Tailscale-only access (all public ports blocked)"
             echo ""
             echo "Options:"
-            echo "  --private      Tailscale-only mode (no public ports)"
-            echo "  --username=X   Username to create (default: deploy)"
-            echo "  --skip-user    Don't create a new user"
-            echo "  -y, --yes      Skip confirmation prompt"
-            echo "  -h, --help     Show this help"
+            echo "  --username=X    Username to create (auto-detects existing user if not provided)"
+            echo "  -h, --help      Show this help"
+            echo ""
+            echo "Examples:"
+            echo "  $0 --mode=public                    # Public web server"
+            echo "  $0 --mode=private                   # Private dev server"
+            echo "  $0 --mode=public --username=deploy  # Public with specific user"
             exit 0
             ;;
         *)
             log_error "Unknown option: $1"
+            echo "Run '$0 --help' for usage"
             exit 1
             ;;
     esac
@@ -102,7 +109,45 @@ log_step "Running pre-flight checks..."
 
 # Must run as root
 if [ "$EUID" -ne 0 ]; then
-    log_error "Please run as root: sudo $0"
+    log_error "Please run as root: sudo $0 --mode=<public|private>"
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Mode handling: require mode on first run, enforce consistency on re-run
+# -----------------------------------------------------------------------------
+if [ -f "$MODE_FILE" ]; then
+    STORED_MODE=$(cat "$MODE_FILE")
+
+    if [ -z "$MODE" ]; then
+        # Re-run without --mode: use stored mode
+        MODE="$STORED_MODE"
+        log_info "Using previously configured mode: $MODE"
+    elif [ "$MODE" != "$STORED_MODE" ]; then
+        # Trying to switch modes: not allowed
+        log_error "Cannot switch modes. This server is configured as '$STORED_MODE'."
+        log_error "Switching from $STORED_MODE to $MODE could lock you out."
+        echo ""
+        echo "If you really need to switch modes, manually remove $MODE_FILE first."
+        exit 1
+    fi
+else
+    # First run: mode is required
+    if [ -z "$MODE" ]; then
+        log_error "Mode is required on first run."
+        echo ""
+        echo "Usage: $0 --mode=<public|private>"
+        echo ""
+        echo "  --mode=public   For web servers (opens ports 22, 80, 443)"
+        echo "  --mode=private  For dev environments (Tailscale-only access)"
+        exit 1
+    fi
+fi
+
+# Validate mode value
+if [ "$MODE" != "public" ] && [ "$MODE" != "private" ]; then
+    log_error "Invalid mode: $MODE"
+    echo "Mode must be 'public' or 'private'"
     exit 1
 fi
 
@@ -122,27 +167,49 @@ if [ "$DISTRO_ID" != "ubuntu" ] && [ "$DISTRO_ID" != "debian" ]; then
 fi
 
 log_info "Detected: $DISTRO_ID $DISTRO_CODENAME"
+log_info "Mode: $MODE"
 
-# Check for SSH key before we lock out password auth
-if [ "$SKIP_USER_CREATION" = false ]; then
-    if [ ! -f /root/.ssh/authorized_keys ] || [ ! -s /root/.ssh/authorized_keys ]; then
-        log_error "No SSH keys found in /root/.ssh/authorized_keys"
-        log_error "Add your SSH key first, or you'll be locked out!"
-        echo ""
-        echo "To add your SSH key:"
-        echo "  1. On your LOCAL machine, run: cat ~/.ssh/id_ed25519.pub"
-        echo "  2. On this server, run:"
-        echo "     mkdir -p ~/.ssh && echo 'YOUR_KEY_HERE' >> ~/.ssh/authorized_keys"
-        echo ""
-        exit 1
-    fi
-    log_info "SSH key found - safe to proceed"
+# -----------------------------------------------------------------------------
+# User detection: find existing user or require --username
+# -----------------------------------------------------------------------------
+# Find existing non-root users (UID >= 1000, real shell, not nobody)
+detect_existing_user() {
+    getent passwd | awk -F: '$3 >= 1000 && $3 != 65534 && $7 !~ /nologin|false/ {print $1}' | head -1
+}
+
+EXISTING_USER=$(detect_existing_user)
+
+if [ -n "$USERNAME" ]; then
+    # Username explicitly provided
+    log_info "Using specified username: $USERNAME"
+elif [ -n "$EXISTING_USER" ]; then
+    # Found existing user
+    USERNAME="$EXISTING_USER"
+    log_info "Detected existing user: $USERNAME"
 else
-    log_warn "Skipping user creation - ensure your existing user has SSH keys!"
+    # No user provided and none exists
+    log_error "No existing non-root user found and --username not provided."
+    echo ""
+    echo "Specify a username to create:"
+    echo "  $0 --mode=$MODE --username=deploy"
+    exit 1
 fi
 
+# Check for SSH key before we lock out password auth
+if [ ! -f /root/.ssh/authorized_keys ] || [ ! -s /root/.ssh/authorized_keys ]; then
+    log_error "No SSH keys found in /root/.ssh/authorized_keys"
+    log_error "Add your SSH key first, or you'll be locked out!"
+    echo ""
+    echo "To add your SSH key:"
+    echo "  1. On your LOCAL machine, run: cat ~/.ssh/id_ed25519.pub"
+    echo "  2. On this server, run:"
+    echo "     mkdir -p ~/.ssh && echo 'YOUR_KEY_HERE' >> ~/.ssh/authorized_keys"
+    exit 1
+fi
+log_info "SSH key found - safe to proceed"
+
 # Private mode requires Tailscale
-if [ "$PRIVATE_MODE" = true ]; then
+if [ "$MODE" = "private" ]; then
     if ! command -v tailscale &> /dev/null; then
         log_error "Private mode requires Tailscale. Install it first:"
         echo "  curl -fsSL https://tailscale.com/install.sh | sh"
@@ -160,25 +227,16 @@ if [ "$PRIVATE_MODE" = true ]; then
     log_info "Tailscale connected: $TAILSCALE_IP"
 fi
 
-# Detect if Tailscale is present (for optional rules in public mode)
-TAILSCALE_INSTALLED=false
-if command -v tailscale &> /dev/null && tailscale status &> /dev/null 2>&1; then
-    TAILSCALE_INSTALLED=true
-    TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "")
-fi
-
-# -----------------------------------------------------------------------------
-# Confirmation
-# -----------------------------------------------------------------------------
+# Show what will happen
 echo ""
-if [ "$PRIVATE_MODE" = true ]; then
+if [ "$MODE" = "private" ]; then
     log_warn "PRIVATE MODE: Server will only be accessible via Tailscale"
     echo ""
     echo "This script will:"
     echo "  1. Update system and enable automatic security updates"
     echo "  2. Install Docker with log rotation"
     echo "  3. Harden SSH (key-only, no root login)"
-    echo "  4. Create user '$USERNAME' with sudo + docker access"
+    echo "  4. Configure user '$USERNAME' with sudo + docker access"
     echo "  5. Configure firewall (Tailscale-only, all public ports blocked)"
     echo "  6. Create 2GB swap file"
     echo ""
@@ -191,23 +249,11 @@ else
     echo "  1. Update system and enable automatic security updates"
     echo "  2. Install Docker with log rotation"
     echo "  3. Harden SSH (key-only, no root login)"
-    echo "  4. Create user '$USERNAME' with sudo + docker access"
+    echo "  4. Configure user '$USERNAME' with sudo + docker access"
     echo "  5. Configure firewall (allow SSH, HTTP, HTTPS only)"
     echo "  6. Create 2GB swap file"
-    if [ "$TAILSCALE_INSTALLED" = true ]; then
-        echo ""
-        echo "  Tailscale detected - will also allow Tailscale traffic"
-    fi
 fi
-
-if [ "$SKIP_CONFIRM" = false ]; then
-    echo ""
-    read -p "Proceed? (yes/no): " CONFIRM
-    if [ "$CONFIRM" != "yes" ]; then
-        log_info "Aborted."
-        exit 0
-    fi
-fi
+echo ""
 
 # =============================================================================
 # STEP 1: System Updates
@@ -275,15 +321,15 @@ else
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
 
-# Configure Docker daemon (log rotation)
+# Configure Docker daemon (log rotation: 50MB × 5 files = 250MB max per container)
 log_info "Configuring Docker log rotation..."
 mkdir -p /etc/docker
 cat > /etc/docker/daemon.json << 'EOF'
 {
     "log-driver": "json-file",
     "log-opts": {
-        "max-size": "10m",
-        "max-file": "3"
+        "max-size": "50m",
+        "max-file": "5"
     }
 }
 EOF
@@ -322,40 +368,43 @@ systemctl restart sshd
 log_info "SSH hardened: password auth disabled, root login disabled"
 
 # =============================================================================
-# STEP 4: Create Non-Root User
+# STEP 4: Configure User
 # =============================================================================
-log_step "Step 4/6: Creating user '$USERNAME'..."
+log_step "Step 4/6: Configuring user '$USERNAME'..."
 
-if [ "$SKIP_USER_CREATION" = true ]; then
-    log_info "Skipping user creation (--skip-user)"
+if id "$USERNAME" &>/dev/null; then
+    log_info "User '$USERNAME' already exists"
 else
-    if id "$USERNAME" &>/dev/null; then
-        log_info "User '$USERNAME' already exists"
-    else
-        useradd -m -s /bin/bash "$USERNAME"
-        log_info "Created user '$USERNAME'"
-    fi
-
-    # Add to sudo group
-    usermod -aG sudo "$USERNAME"
-
-    # Add to docker group
-    usermod -aG docker "$USERNAME"
-
-    # Copy SSH keys from root
-    USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
-    mkdir -p "$USER_HOME/.ssh"
-    cp /root/.ssh/authorized_keys "$USER_HOME/.ssh/authorized_keys"
-    chown -R "$USERNAME:$USERNAME" "$USER_HOME/.ssh"
-    chmod 700 "$USER_HOME/.ssh"
-    chmod 600 "$USER_HOME/.ssh/authorized_keys"
-
-    # Allow sudo without password (convenient for scripts)
-    echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$USERNAME"
-    chmod 440 "/etc/sudoers.d/$USERNAME"
-
-    log_info "User '$USERNAME' configured with sudo + docker access"
+    useradd -m -s /bin/bash "$USERNAME"
+    log_info "Created user '$USERNAME'"
 fi
+
+# Add to sudo group
+usermod -aG sudo "$USERNAME"
+
+# Add to docker group
+usermod -aG docker "$USERNAME"
+
+# Copy SSH keys from root (if user doesn't have them yet)
+USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
+mkdir -p "$USER_HOME/.ssh"
+
+if [ ! -f "$USER_HOME/.ssh/authorized_keys" ] || [ ! -s "$USER_HOME/.ssh/authorized_keys" ]; then
+    cp /root/.ssh/authorized_keys "$USER_HOME/.ssh/authorized_keys"
+    log_info "Copied SSH keys to $USERNAME"
+else
+    log_info "User already has SSH keys"
+fi
+
+chown -R "$USERNAME:$USERNAME" "$USER_HOME/.ssh"
+chmod 700 "$USER_HOME/.ssh"
+chmod 600 "$USER_HOME/.ssh/authorized_keys"
+
+# Allow sudo without password (convenient for scripts)
+echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$USERNAME"
+chmod 440 "/etc/sudoers.d/$USERNAME"
+
+log_info "User '$USERNAME' configured with sudo + docker access"
 
 # =============================================================================
 # STEP 5: Configure Firewall (iptables)
@@ -384,22 +433,15 @@ iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 # Allow ICMP (ping)
 iptables -A INPUT -p icmp -j ACCEPT
 
-if [ "$PRIVATE_MODE" = true ]; then
-    # PRIVATE MODE: Tailscale only
-    iptables -A INPUT -i tailscale0 -j ACCEPT
-    iptables -A INPUT -p udp --dport 41641 -j ACCEPT
-else
-    # PUBLIC MODE: Allow SSH, HTTP, HTTPS
+# Always allow Tailscale (harmless if not installed - interface won't exist)
+iptables -A INPUT -i tailscale0 -j ACCEPT
+iptables -A INPUT -p udp --dport 41641 -j ACCEPT
+
+if [ "$MODE" = "public" ]; then
+    # PUBLIC MODE: Also allow SSH, HTTP, HTTPS
     iptables -A INPUT -p tcp --dport 22 -j ACCEPT
     iptables -A INPUT -p tcp --dport 80 -j ACCEPT
     iptables -A INPUT -p tcp --dport 443 -j ACCEPT
-
-    # If Tailscale is installed, allow it too
-    if [ "$TAILSCALE_INSTALLED" = true ]; then
-        iptables -A INPUT -i tailscale0 -j ACCEPT
-        iptables -A INPUT -p udp --dport 41641 -j ACCEPT
-        log_info "Tailscale rules added (detected installation)"
-    fi
 fi
 
 # Default policy: DROP everything else
@@ -419,7 +461,7 @@ iptables -P FORWARD DROP
 # -----------------------------------------------------------------------------
 log_info "Configuring Docker firewall rules..."
 
-# Create DOCKER-USER chain if it doesn't exist (Docker creates it on first container)
+# Create DOCKER-USER chain if it doesn't exist
 iptables -N DOCKER-USER 2>/dev/null || true
 
 # Flush existing DOCKER-USER rules
@@ -433,18 +475,13 @@ iptables -I DOCKER-USER -i docker0 -j RETURN
 iptables -I DOCKER-USER -s 172.16.0.0/12 -j RETURN
 iptables -I DOCKER-USER -i br-+ -j RETURN
 
-if [ "$PRIVATE_MODE" = true ]; then
-    # PRIVATE MODE: Only Tailscale can reach containers
-    iptables -I DOCKER-USER -i tailscale0 -j RETURN
-else
-    # PUBLIC MODE: Allow web traffic to reach containers
+# Always allow Tailscale to reach containers (harmless if not installed)
+iptables -I DOCKER-USER -i tailscale0 -j RETURN
+
+if [ "$MODE" = "public" ]; then
+    # PUBLIC MODE: Also allow web traffic to reach containers
     iptables -I DOCKER-USER -p tcp --dport 80 -j RETURN
     iptables -I DOCKER-USER -p tcp --dport 443 -j RETURN
-
-    # If Tailscale installed, allow it to reach containers too
-    if [ "$TAILSCALE_INSTALLED" = true ]; then
-        iptables -I DOCKER-USER -i tailscale0 -j RETURN
-    fi
 fi
 
 # Block everything else to containers (whitelist approach)
@@ -459,12 +496,7 @@ ip6tables -F INPUT
 ip6tables -A INPUT -i lo -j ACCEPT
 ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
-
-if [ "$PRIVATE_MODE" = true ]; then
-    ip6tables -A INPUT -i tailscale0 -j ACCEPT
-elif [ "$TAILSCALE_INSTALLED" = true ]; then
-    ip6tables -A INPUT -i tailscale0 -j ACCEPT
-fi
+ip6tables -A INPUT -i tailscale0 -j ACCEPT  # Always allow (harmless if not installed)
 
 ip6tables -P INPUT DROP
 ip6tables -P FORWARD DROP
@@ -476,10 +508,10 @@ ip6tables -P OUTPUT ACCEPT
 iptables-save > /etc/iptables/rules.v4
 ip6tables-save > /etc/iptables/rules.v6
 
-if [ "$PRIVATE_MODE" = true ]; then
+if [ "$MODE" = "private" ]; then
     log_info "Firewall configured: Tailscale-only access"
 else
-    log_info "Firewall configured: SSH (22), HTTP (80), HTTPS (443) open"
+    log_info "Firewall configured: SSH (22), HTTP (80), HTTPS (443) + Tailscale"
 fi
 
 # =============================================================================
@@ -506,11 +538,11 @@ else
 fi
 
 # =============================================================================
-# Version Tracking & Update Checker
+# Save mode and version
 # =============================================================================
-log_info "Setting up version tracking..."
+log_info "Saving configuration..."
 
-# Save current version
+echo "$MODE" > "$MODE_FILE"
 echo "$SCRIPT_VERSION" > "$VERSION_FILE"
 
 # Create update check script (runs on login)
@@ -556,10 +588,10 @@ echo "==========================================================================
 echo -e "${GREEN}Setup Complete!${NC}"
 echo "============================================================================="
 echo ""
-if [ "$PRIVATE_MODE" = true ]; then
+if [ "$MODE" = "private" ]; then
     echo "Your server is now configured with:"
     echo "  ✓ Automatic security updates"
-    echo "  ✓ Docker with log rotation"
+    echo "  ✓ Docker with log rotation (50MB × 5 files per container)"
     echo "  ✓ SSH: key-only, no root login"
     echo "  ✓ User '$USERNAME' with sudo + docker"
     echo "  ✓ Firewall: Tailscale-only (all public ports blocked)"
@@ -570,10 +602,10 @@ if [ "$PRIVATE_MODE" = true ]; then
 else
     echo "Your server is now configured with:"
     echo "  ✓ Automatic security updates"
-    echo "  ✓ Docker with log rotation"
+    echo "  ✓ Docker with log rotation (50MB × 5 files per container)"
     echo "  ✓ SSH: key-only, no root login"
     echo "  ✓ User '$USERNAME' with sudo + docker"
-    echo "  ✓ Firewall: only ports 22, 80, 443 open"
+    echo "  ✓ Firewall: ports 22, 80, 443 + Tailscale"
     echo "  ✓ 2GB swap file"
     echo ""
     echo "Connect via:"
@@ -581,13 +613,10 @@ else
 fi
 echo ""
 echo "============================================================================="
-
-if [ "$SKIP_USER_CREATION" = false ]; then
-    echo ""
-    log_warn "IMPORTANT: Root login is now disabled."
-    log_warn "Test the new user login BEFORE closing this session!"
-    echo ""
-    echo "In a NEW terminal, run:"
-    echo "  ssh $USERNAME@<server-ip>"
-    echo ""
-fi
+echo ""
+log_warn "IMPORTANT: Root login is now disabled."
+log_warn "Test the new user login BEFORE closing this session!"
+echo ""
+echo "In a NEW terminal, run:"
+echo "  ssh $USERNAME@<server-ip>"
+echo ""
