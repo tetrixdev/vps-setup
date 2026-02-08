@@ -27,7 +27,7 @@
 #
 # =============================================================================
 
-set -eo pipefail  # Exit on any error or pipeline failure
+set -euo pipefail  # Exit on error, undefined variable, or pipeline failure
 
 SCRIPT_VERSION="1.0.0"
 VERSION_FILE="/etc/vps-setup-version"
@@ -43,10 +43,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-log_step() { echo -e "\n${BLUE}==>${NC} $1"; }
+log_info() { echo -e "${GREEN}[INFO]${NC} ${1:-}"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} ${1:-}"; }
+log_error() { echo -e "${RED}[ERROR]${NC} ${1:-}"; }
+log_step() { echo -e "\n${BLUE}==>${NC} ${1:-}"; }
 
 # -----------------------------------------------------------------------------
 # Parse arguments
@@ -312,6 +312,13 @@ cat > /etc/docker/daemon.json << 'EOF'
 EOF
 
 systemctl restart docker
+
+# Verify Docker is running
+if ! docker info >/dev/null 2>&1; then
+    log_error "Docker failed to start. Check 'systemctl status docker' for details."
+    exit 1
+fi
+
 log_info "Docker installed and configured"
 
 # =============================================================================
@@ -512,6 +519,21 @@ ip6tables -P OUTPUT ACCEPT
 # IPv6 FORWARD - let Docker manage, just set policy
 ip6tables -P FORWARD DROP
 
+# IPv6 DOCKER-USER chain (container access control)
+ip6tables -N DOCKER-USER 2>/dev/null || true
+ip6tables -F DOCKER-USER 2>/dev/null || true
+ip6tables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+ip6tables -A DOCKER-USER -i docker0 -o docker0 -j RETURN
+ip6tables -A DOCKER-USER -i br-+ -o br-+ -j RETURN
+ip6tables -A DOCKER-USER -i tailscale0 -j RETURN
+
+if [ "$MODE" = "public" ]; then
+    ip6tables -A DOCKER-USER -p tcp -m conntrack --ctorigdstport 80 -j RETURN
+    ip6tables -A DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 -j RETURN
+fi
+
+ip6tables -A DOCKER-USER -j DROP
+
 # -----------------------------------------------------------------------------
 # Restart Docker to re-insert its chains properly
 # -----------------------------------------------------------------------------
@@ -538,7 +560,10 @@ log_step "Step 6/6: Configuring swap..."
 if [ -f /swapfile ] || [ "$(swapon --show | wc -l)" -gt 0 ]; then
     log_info "Swap already exists, skipping"
 else
-    fallocate -l 2G /swapfile
+    # Create swap file (fallocate is faster, dd is fallback for unsupported filesystems)
+    if ! fallocate -l 2G /swapfile 2>/dev/null; then
+        dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
+    fi
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile

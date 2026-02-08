@@ -196,7 +196,7 @@ The script installs an update checker that runs on login. When a new version is 
   curl -O https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh && sudo bash setup.sh
 ```
 
-The script is idempotent — safe to re-run.
+The script is safe to re-run (note: Docker containers will restart).
 
 ---
 
@@ -234,14 +234,12 @@ Then run the setup script.
 If you ran the script without an SSH key and got locked out:
 
 1. Access via your provider's **web console** (VNC/Console)
-2. Edit `/etc/ssh/sshd_config`:
+2. Remove the hardening config:
    ```bash
-   nano /etc/ssh/sshd_config
-   # Set: PasswordAuthentication yes
-   # Set: PermitRootLogin yes
+   rm /etc/ssh/sshd_config.d/00-vps-hardening.conf
+   systemctl restart sshd
    ```
-3. Restart SSH: `systemctl restart sshd`
-4. Add your SSH key properly, then re-run the script
+3. Add your SSH key properly, then re-run the script
 
 ### Docker permission denied
 
