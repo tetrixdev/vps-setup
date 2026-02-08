@@ -412,46 +412,44 @@ echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-
 apt-get install -y iptables-persistent
 
 # -----------------------------------------------------------------------------
+# Helper: add iptables rule if it doesn't exist (idempotent)
+# -----------------------------------------------------------------------------
+ipt_add() {
+    iptables -C "$@" 2>/dev/null || iptables -A "$@"
+}
+ipt6_add() {
+    ip6tables -C "$@" 2>/dev/null || ip6tables -A "$@"
+}
+
+# -----------------------------------------------------------------------------
 # IPv4 INPUT chain (host protection)
 # -----------------------------------------------------------------------------
 log_info "Configuring IPv4 firewall rules..."
 
-# Set ACCEPT policy first to avoid lockout during rule rebuild (important for re-runs)
-iptables -P INPUT ACCEPT
-
-# Flush existing INPUT rules
-iptables -F INPUT
+# Set policies
+iptables -P INPUT DROP
+iptables -P OUTPUT ACCEPT
+iptables -P FORWARD DROP
 
 # Allow loopback
-iptables -A INPUT -i lo -j ACCEPT
+ipt_add INPUT -i lo -j ACCEPT
 
 # Allow established connections
-iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+ipt_add INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
 # Allow ICMP (ping)
-iptables -A INPUT -p icmp -j ACCEPT
+ipt_add INPUT -p icmp -j ACCEPT
 
 # Always allow Tailscale (harmless if not installed - interface won't exist)
-iptables -A INPUT -i tailscale0 -j ACCEPT
-iptables -A INPUT -p udp --dport 41641 -j ACCEPT
+ipt_add INPUT -i tailscale0 -j ACCEPT
+ipt_add INPUT -p udp --dport 41641 -j ACCEPT
 
 if [ "$MODE" = "public" ]; then
     # PUBLIC MODE: Also allow SSH, HTTP, HTTPS
-    iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-    iptables -A INPUT -p tcp --dport 80 -j ACCEPT
-    iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+    ipt_add INPUT -p tcp --dport 22 -j ACCEPT
+    ipt_add INPUT -p tcp --dport 80 -j ACCEPT
+    ipt_add INPUT -p tcp --dport 443 -j ACCEPT
 fi
-
-# Default policy: DROP everything else
-iptables -P INPUT DROP
-iptables -P OUTPUT ACCEPT
-
-# -----------------------------------------------------------------------------
-# FORWARD chain - let Docker manage it
-# -----------------------------------------------------------------------------
-# Docker manages the FORWARD chain and inserts its own rules dynamically.
-# We just set the policy to DROP as a fallback.
-iptables -P FORWARD DROP
 
 # -----------------------------------------------------------------------------
 # DOCKER-USER chain (container access control)
@@ -465,80 +463,65 @@ log_info "Configuring Docker firewall rules..."
 # Create DOCKER-USER chain if it doesn't exist
 iptables -N DOCKER-USER 2>/dev/null || true
 
-# Flush existing DOCKER-USER rules
-iptables -F DOCKER-USER 2>/dev/null || true
-
 # Allow established connections (responses to outbound requests)
-iptables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+ipt_add DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 
 # Allow Docker internal traffic (container-to-container)
-iptables -A DOCKER-USER -i docker0 -o docker0 -j RETURN
-iptables -A DOCKER-USER -i br-+ -o br-+ -j RETURN
+ipt_add DOCKER-USER -i docker0 -o docker0 -j RETURN
+ipt_add DOCKER-USER -i br-+ -o br-+ -j RETURN
 
 # Allow container outbound traffic (container -> internet)
-iptables -A DOCKER-USER -s 172.16.0.0/12 ! -d 172.16.0.0/12 -j RETURN
+ipt_add DOCKER-USER -s 172.16.0.0/12 ! -d 172.16.0.0/12 -j RETURN
 
 # Always allow Tailscale to reach containers
-iptables -A DOCKER-USER -i tailscale0 -j RETURN
+ipt_add DOCKER-USER -i tailscale0 -j RETURN
 
 if [ "$MODE" = "public" ]; then
     # PUBLIC MODE: Allow web traffic to reach containers (ports 80, 443)
-    iptables -A DOCKER-USER -p tcp -m conntrack --ctorigdstport 80 -j RETURN
-    iptables -A DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 -j RETURN
+    ipt_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 80 -j RETURN
+    ipt_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 -j RETURN
 fi
 
-# Block everything else to containers
+# Block everything else to containers (must be last)
 # This prevents accidental exposure (e.g., docker run -p 3306:3306 won't work)
-iptables -A DOCKER-USER -j DROP
+ipt_add DOCKER-USER -j DROP
 
 # -----------------------------------------------------------------------------
 # IPv6 Rules
 # -----------------------------------------------------------------------------
 log_info "Configuring IPv6 firewall rules..."
 
-# Set ACCEPT policy first to avoid lockout during rule rebuild
-ip6tables -P INPUT ACCEPT
+# Set policies
+ip6tables -P INPUT DROP
+ip6tables -P OUTPUT ACCEPT
+ip6tables -P FORWARD DROP
 
 # IPv6 INPUT chain
-ip6tables -F INPUT
-ip6tables -A INPUT -i lo -j ACCEPT
-ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
-ip6tables -A INPUT -i tailscale0 -j ACCEPT  # Always allow (harmless if not installed)
+ipt6_add INPUT -i lo -j ACCEPT
+ipt6_add INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+ipt6_add INPUT -p ipv6-icmp -j ACCEPT
+ipt6_add INPUT -i tailscale0 -j ACCEPT
 
 if [ "$MODE" = "public" ]; then
     # PUBLIC MODE: Allow SSH, HTTP, HTTPS over IPv6
-    ip6tables -A INPUT -p tcp --dport 22 -j ACCEPT
-    ip6tables -A INPUT -p tcp --dport 80 -j ACCEPT
-    ip6tables -A INPUT -p tcp --dport 443 -j ACCEPT
+    ipt6_add INPUT -p tcp --dport 22 -j ACCEPT
+    ipt6_add INPUT -p tcp --dport 80 -j ACCEPT
+    ipt6_add INPUT -p tcp --dport 443 -j ACCEPT
 fi
-
-ip6tables -P INPUT DROP
-ip6tables -P OUTPUT ACCEPT
-
-# IPv6 FORWARD - let Docker manage, just set policy
-ip6tables -P FORWARD DROP
 
 # IPv6 DOCKER-USER chain (container access control)
 ip6tables -N DOCKER-USER 2>/dev/null || true
-ip6tables -F DOCKER-USER 2>/dev/null || true
-ip6tables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-ip6tables -A DOCKER-USER -i docker0 -o docker0 -j RETURN
-ip6tables -A DOCKER-USER -i br-+ -o br-+ -j RETURN
-ip6tables -A DOCKER-USER -i tailscale0 -j RETURN
+ipt6_add DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+ipt6_add DOCKER-USER -i docker0 -o docker0 -j RETURN
+ipt6_add DOCKER-USER -i br-+ -o br-+ -j RETURN
+ipt6_add DOCKER-USER -i tailscale0 -j RETURN
 
 if [ "$MODE" = "public" ]; then
-    ip6tables -A DOCKER-USER -p tcp -m conntrack --ctorigdstport 80 -j RETURN
-    ip6tables -A DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 -j RETURN
+    ipt6_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 80 -j RETURN
+    ipt6_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 -j RETURN
 fi
 
-ip6tables -A DOCKER-USER -j DROP
-
-# -----------------------------------------------------------------------------
-# Restart Docker to re-insert its chains properly
-# -----------------------------------------------------------------------------
-log_info "Restarting Docker to apply firewall rules..."
-systemctl restart docker
+ipt6_add DOCKER-USER -j DROP
 
 # -----------------------------------------------------------------------------
 # Save iptables rules

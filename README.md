@@ -196,7 +196,7 @@ The script installs an update checker that runs on login. When a new version is 
   curl -O https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh && sudo bash setup.sh
 ```
 
-The script is safe to re-run (note: Docker containers will restart).
+The script is idempotent — safe to re-run without disruption.
 
 ---
 
