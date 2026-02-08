@@ -28,7 +28,7 @@
 #
 # =============================================================================
 
-set -e  # Exit on any error
+set -eo pipefail  # Exit on any error or pipeline failure
 
 SCRIPT_VERSION="1.0.0"
 VERSION_FILE="/etc/vps-setup-version"
@@ -60,6 +60,11 @@ while [[ $# -gt 0 ]]; do
         --mode)
             if [ -z "$2" ] || [[ "$2" == -* ]]; then
                 log_error "--mode requires a value (public or private)"
+                exit 1
+            fi
+            if [ "$2" != "public" ] && [ "$2" != "private" ]; then
+                log_error "Invalid mode: $2"
+                echo "Mode must be 'public' or 'private'"
                 exit 1
             fi
             MODE="$2"
@@ -364,13 +369,13 @@ if [ ! -f /etc/ssh/sshd_config.backup ]; then
 fi
 
 # Use drop-in config for reliability (survives cloud-init, package updates)
-# Named 99-* to load last and override any other drop-in configs
+# Named 00-* to load FIRST - OpenSSH uses first-match-wins with alphabetical order
 log_info "Creating SSH hardening drop-in config..."
 mkdir -p /etc/ssh/sshd_config.d
 
-cat > /etc/ssh/sshd_config.d/99-vps-hardening.conf << 'EOF'
+cat > /etc/ssh/sshd_config.d/00-vps-hardening.conf << 'EOF'
 # VPS Setup SSH Hardening
-# This file overrides settings from other configs (including cloud-init)
+# Named 00-* to load first and take precedence (OpenSSH first-match-wins)
 
 PasswordAuthentication no
 PermitRootLogin no
@@ -390,7 +395,7 @@ fi
 # Verify sshd config is valid before restarting
 if ! sshd -t 2>/dev/null; then
     log_error "SSH config validation failed. Restoring backup..."
-    rm -f /etc/ssh/sshd_config.d/99-vps-hardening.conf
+    rm -f /etc/ssh/sshd_config.d/00-vps-hardening.conf
     exit 1
 fi
 
@@ -432,7 +437,11 @@ chown -R "$USERNAME:$USERNAME" "$USER_HOME/.ssh"
 chmod 700 "$USER_HOME/.ssh"
 chmod 600 "$USER_HOME/.ssh/authorized_keys"
 
-# Allow sudo without password (convenient for scripts)
+# Allow sudo without password
+# This is intentional for automation/deployment scripts. The security model is:
+# - SSH key required for access (no password auth)
+# - Once authenticated via SSH key, sudo is allowed
+# - If SSH key is compromised, attacker has access anyway
 echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$USERNAME"
 chmod 440 "/etc/sudoers.d/$USERNAME"
 
@@ -452,6 +461,9 @@ apt-get install -y iptables-persistent
 # IPv4 INPUT chain (host protection)
 # -----------------------------------------------------------------------------
 log_info "Configuring IPv4 firewall rules..."
+
+# Set ACCEPT policy first to avoid lockout during rule rebuild (important for re-runs)
+iptables -P INPUT ACCEPT
 
 # Flush existing INPUT rules
 iptables -F INPUT
@@ -481,53 +493,18 @@ iptables -P INPUT DROP
 iptables -P OUTPUT ACCEPT
 
 # -----------------------------------------------------------------------------
-# FORWARD chain (VPS-FORWARD for defense-in-depth)
+# FORWARD chain - let Docker manage it
 # -----------------------------------------------------------------------------
-# We create our own chain that runs BEFORE Docker's chains.
-# This blocks external traffic at the FORWARD level, providing defense-in-depth
-# even if DOCKER-USER rules are misconfigured or Docker restarts.
-#
-# IMPORTANT: We do NOT flush FORWARD - Docker manages that chain.
-# Instead, we insert our chain at position 1 so it runs first.
-
-log_info "Configuring FORWARD chain (defense-in-depth)..."
-
-# Create VPS-FORWARD chain (or flush if exists)
-iptables -N VPS-FORWARD 2>/dev/null || iptables -F VPS-FORWARD
-
-# Allow established connections (responses to outbound requests)
-iptables -A VPS-FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-
-# Allow Tailscale to reach containers (works in both modes)
-iptables -A VPS-FORWARD -i tailscale0 -j RETURN
-
-# Allow container outbound traffic (container -> internet)
-iptables -A VPS-FORWARD -i docker0 -j RETURN
-iptables -A VPS-FORWARD -i br-+ -j RETURN
-
-if [ "$MODE" = "public" ]; then
-    # PUBLIC MODE: Allow external web traffic to reach containers
-    # Using conntrack to match original destination port (before DNAT)
-    iptables -A VPS-FORWARD -p tcp -m conntrack --ctorigdstport 80 -j RETURN
-    iptables -A VPS-FORWARD -p tcp -m conntrack --ctorigdstport 443 -j RETURN
-fi
-
-# Block everything else (external traffic to containers)
-iptables -A VPS-FORWARD -j DROP
-
-# Insert VPS-FORWARD at the top of FORWARD chain
-# Remove any existing jump first (idempotent)
-iptables -D FORWARD -j VPS-FORWARD 2>/dev/null || true
-iptables -I FORWARD 1 -j VPS-FORWARD
-
-# Set FORWARD policy to DROP as a fallback
+# Docker manages the FORWARD chain and inserts its own rules dynamically.
+# We just set the policy to DROP as a fallback.
 iptables -P FORWARD DROP
 
 # -----------------------------------------------------------------------------
-# DOCKER-USER chain (secondary container access control)
+# DOCKER-USER chain (container access control)
 # -----------------------------------------------------------------------------
-# This provides a second layer of protection. Docker's chains process traffic
-# that passes VPS-FORWARD, and DOCKER-USER runs before Docker's ACCEPT rules.
+# Docker preserves DOCKER-USER across restarts and inserts a jump to it at
+# the beginning of FORWARD. Rules here run BEFORE Docker's ACCEPT rules.
+# This is Docker's recommended approach for user firewall rules.
 
 log_info "Configuring Docker firewall rules..."
 
@@ -537,32 +514,36 @@ iptables -N DOCKER-USER 2>/dev/null || true
 # Flush existing DOCKER-USER rules
 iptables -F DOCKER-USER 2>/dev/null || true
 
-# Allow established connections
+# Allow established connections (responses to outbound requests)
 iptables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 
 # Allow Docker internal traffic (container-to-container)
 iptables -A DOCKER-USER -i docker0 -o docker0 -j RETURN
 iptables -A DOCKER-USER -i br-+ -o br-+ -j RETURN
 
-# Allow container outbound traffic
+# Allow container outbound traffic (container -> internet)
 iptables -A DOCKER-USER -s 172.16.0.0/12 ! -d 172.16.0.0/12 -j RETURN
 
 # Always allow Tailscale to reach containers
 iptables -A DOCKER-USER -i tailscale0 -j RETURN
 
 if [ "$MODE" = "public" ]; then
-    # PUBLIC MODE: Allow web traffic to reach containers
+    # PUBLIC MODE: Allow web traffic to reach containers (ports 80, 443)
     iptables -A DOCKER-USER -p tcp -m conntrack --ctorigdstport 80 -j RETURN
     iptables -A DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 -j RETURN
 fi
 
-# Block everything else to containers (whitelist approach)
+# Block everything else to containers
+# This prevents accidental exposure (e.g., docker run -p 3306:3306 won't work)
 iptables -A DOCKER-USER -j DROP
 
 # -----------------------------------------------------------------------------
 # IPv6 Rules
 # -----------------------------------------------------------------------------
 log_info "Configuring IPv6 firewall rules..."
+
+# Set ACCEPT policy first to avoid lockout during rule rebuild
+ip6tables -P INPUT ACCEPT
 
 # IPv6 INPUT chain
 ip6tables -F INPUT
@@ -581,21 +562,7 @@ fi
 ip6tables -P INPUT DROP
 ip6tables -P OUTPUT ACCEPT
 
-# IPv6 FORWARD chain (mirror IPv4 VPS-FORWARD logic)
-ip6tables -N VPS-FORWARD 2>/dev/null || ip6tables -F VPS-FORWARD
-ip6tables -A VPS-FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-ip6tables -A VPS-FORWARD -i tailscale0 -j RETURN
-ip6tables -A VPS-FORWARD -i docker0 -j RETURN
-ip6tables -A VPS-FORWARD -i br-+ -j RETURN
-
-if [ "$MODE" = "public" ]; then
-    ip6tables -A VPS-FORWARD -p tcp -m conntrack --ctorigdstport 80 -j RETURN
-    ip6tables -A VPS-FORWARD -p tcp -m conntrack --ctorigdstport 443 -j RETURN
-fi
-
-ip6tables -A VPS-FORWARD -j DROP
-ip6tables -D FORWARD -j VPS-FORWARD 2>/dev/null || true
-ip6tables -I FORWARD 1 -j VPS-FORWARD
+# IPv6 FORWARD - let Docker manage, just set policy
 ip6tables -P FORWARD DROP
 
 # -----------------------------------------------------------------------------

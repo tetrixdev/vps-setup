@@ -6,6 +6,16 @@ Secures a fresh Ubuntu/Debian server for hosting web applications or private dev
 
 ---
 
+## Who This Is For
+
+This script is for people who want to securely run Docker containers **without needing to understand iptables, SSH hardening, or Docker networking**.
+
+If you just want to deploy containers safely and don't want to worry about accidentally exposing a database port to the internet — this is for you. The script makes opinionated choices so you don't have to.
+
+**Not for you if:** You need custom firewall rules, non-standard port configurations, or want fine-grained control over every setting.
+
+---
+
 ## What It Does
 
 | Step | Action |
