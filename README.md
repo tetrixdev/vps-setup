@@ -111,7 +111,7 @@ The public IP will be completely unreachable.
 
 ## Usage
 
-```
+```text
 ./setup.sh --mode=<public|private> [OPTIONS]
 
 Required (first run):
@@ -195,7 +195,7 @@ Security patches applied automatically via `unattended-upgrades`.
 
 The script installs an update checker that runs on login. When a new version is available:
 
-```
+```text
 [vps-setup] Update available: 1.0.0 → 1.1.0
   curl -O https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh && sudo bash setup.sh
 ```

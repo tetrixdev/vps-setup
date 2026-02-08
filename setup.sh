@@ -57,19 +57,28 @@ USERNAME=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --mode=public)
-            MODE="public"
-            shift
-            ;;
-        --mode=private)
-            MODE="private"
-            shift
-            ;;
         --mode)
+            if [ -z "$2" ] || [[ "$2" == -* ]]; then
+                log_error "--mode requires a value (public or private)"
+                exit 1
+            fi
             MODE="$2"
             shift 2
             ;;
+        --mode=*)
+            MODE="${1#*=}"
+            if [ "$MODE" != "public" ] && [ "$MODE" != "private" ]; then
+                log_error "Invalid mode: $MODE"
+                echo "Mode must be 'public' or 'private'"
+                exit 1
+            fi
+            shift
+            ;;
         --username)
+            if [ -z "$2" ] || [[ "$2" == -* ]]; then
+                log_error "--username requires a value"
+                exit 1
+            fi
             USERNAME="$2"
             shift 2
             ;;
@@ -324,6 +333,13 @@ fi
 # Configure Docker daemon (log rotation: 50MB × 5 files = 250MB max per container)
 log_info "Configuring Docker log rotation..."
 mkdir -p /etc/docker
+
+# Backup existing config if present
+if [ -f /etc/docker/daemon.json ] && [ ! -f /etc/docker/daemon.json.backup ]; then
+    cp /etc/docker/daemon.json /etc/docker/daemon.json.backup
+    log_info "Backed up existing Docker config to daemon.json.backup"
+fi
+
 cat > /etc/docker/daemon.json << 'EOF'
 {
     "log-driver": "json-file",
@@ -347,20 +363,36 @@ if [ ! -f /etc/ssh/sshd_config.backup ]; then
     cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
 fi
 
-# Disable password authentication
-sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+# Use drop-in config for reliability (survives cloud-init, package updates)
+# Named 99-* to load last and override any other drop-in configs
+log_info "Creating SSH hardening drop-in config..."
+mkdir -p /etc/ssh/sshd_config.d
 
-# Disable root login
-sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-sed -i 's/^PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
-sed -i 's/^PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config
+cat > /etc/ssh/sshd_config.d/99-vps-hardening.conf << 'EOF'
+# VPS Setup SSH Hardening
+# This file overrides settings from other configs (including cloud-init)
 
-# Ensure key authentication is enabled
-sed -i 's/^#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+PasswordAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+EOF
 
-# Disable empty passwords
-sed -i 's/^#PermitEmptyPasswords.*/PermitEmptyPasswords no/' /etc/ssh/sshd_config
+# Remove conflicting settings from cloud-init's drop-in (if it exists)
+# This prevents cloud-init from overriding our hardening on reboot
+CLOUD_INIT_SSH="/etc/ssh/sshd_config.d/50-cloud-init.conf"
+if [ -f "$CLOUD_INIT_SSH" ]; then
+    log_info "Removing conflicting settings from cloud-init SSH config..."
+    sed -i '/^PasswordAuthentication/d' "$CLOUD_INIT_SSH"
+    sed -i '/^PermitRootLogin/d' "$CLOUD_INIT_SSH"
+fi
+
+# Verify sshd config is valid before restarting
+if ! sshd -t 2>/dev/null; then
+    log_error "SSH config validation failed. Restoring backup..."
+    rm -f /etc/ssh/sshd_config.d/99-vps-hardening.conf
+    exit 1
+fi
 
 # Restart SSH (existing sessions stay alive)
 systemctl restart sshd
@@ -449,16 +481,54 @@ iptables -P INPUT DROP
 iptables -P OUTPUT ACCEPT
 
 # -----------------------------------------------------------------------------
-# FORWARD chain (for Docker)
+# FORWARD chain (VPS-FORWARD for defense-in-depth)
 # -----------------------------------------------------------------------------
-iptables -F FORWARD 2>/dev/null || true
-iptables -I FORWARD -s 172.16.0.0/12 -j ACCEPT
-iptables -I FORWARD -d 172.16.0.0/12 -j ACCEPT
+# We create our own chain that runs BEFORE Docker's chains.
+# This blocks external traffic at the FORWARD level, providing defense-in-depth
+# even if DOCKER-USER rules are misconfigured or Docker restarts.
+#
+# IMPORTANT: We do NOT flush FORWARD - Docker manages that chain.
+# Instead, we insert our chain at position 1 so it runs first.
+
+log_info "Configuring FORWARD chain (defense-in-depth)..."
+
+# Create VPS-FORWARD chain (or flush if exists)
+iptables -N VPS-FORWARD 2>/dev/null || iptables -F VPS-FORWARD
+
+# Allow established connections (responses to outbound requests)
+iptables -A VPS-FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+
+# Allow Tailscale to reach containers (works in both modes)
+iptables -A VPS-FORWARD -i tailscale0 -j RETURN
+
+# Allow container outbound traffic (container -> internet)
+iptables -A VPS-FORWARD -i docker0 -j RETURN
+iptables -A VPS-FORWARD -i br-+ -j RETURN
+
+if [ "$MODE" = "public" ]; then
+    # PUBLIC MODE: Allow external web traffic to reach containers
+    # Using conntrack to match original destination port (before DNAT)
+    iptables -A VPS-FORWARD -p tcp -m conntrack --ctorigdstport 80 -j RETURN
+    iptables -A VPS-FORWARD -p tcp -m conntrack --ctorigdstport 443 -j RETURN
+fi
+
+# Block everything else (external traffic to containers)
+iptables -A VPS-FORWARD -j DROP
+
+# Insert VPS-FORWARD at the top of FORWARD chain
+# Remove any existing jump first (idempotent)
+iptables -D FORWARD -j VPS-FORWARD 2>/dev/null || true
+iptables -I FORWARD 1 -j VPS-FORWARD
+
+# Set FORWARD policy to DROP as a fallback
 iptables -P FORWARD DROP
 
 # -----------------------------------------------------------------------------
-# DOCKER-USER chain (container access control)
+# DOCKER-USER chain (secondary container access control)
 # -----------------------------------------------------------------------------
+# This provides a second layer of protection. Docker's chains process traffic
+# that passes VPS-FORWARD, and DOCKER-USER runs before Docker's ACCEPT rules.
+
 log_info "Configuring Docker firewall rules..."
 
 # Create DOCKER-USER chain if it doesn't exist
@@ -468,39 +538,71 @@ iptables -N DOCKER-USER 2>/dev/null || true
 iptables -F DOCKER-USER 2>/dev/null || true
 
 # Allow established connections
-iptables -I DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+iptables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 
-# Allow Docker internal traffic
-iptables -I DOCKER-USER -i docker0 -j RETURN
-iptables -I DOCKER-USER -s 172.16.0.0/12 -j RETURN
-iptables -I DOCKER-USER -i br-+ -j RETURN
+# Allow Docker internal traffic (container-to-container)
+iptables -A DOCKER-USER -i docker0 -o docker0 -j RETURN
+iptables -A DOCKER-USER -i br-+ -o br-+ -j RETURN
 
-# Always allow Tailscale to reach containers (harmless if not installed)
-iptables -I DOCKER-USER -i tailscale0 -j RETURN
+# Allow container outbound traffic
+iptables -A DOCKER-USER -s 172.16.0.0/12 ! -d 172.16.0.0/12 -j RETURN
+
+# Always allow Tailscale to reach containers
+iptables -A DOCKER-USER -i tailscale0 -j RETURN
 
 if [ "$MODE" = "public" ]; then
-    # PUBLIC MODE: Also allow web traffic to reach containers
-    iptables -I DOCKER-USER -p tcp --dport 80 -j RETURN
-    iptables -I DOCKER-USER -p tcp --dport 443 -j RETURN
+    # PUBLIC MODE: Allow web traffic to reach containers
+    iptables -A DOCKER-USER -p tcp -m conntrack --ctorigdstport 80 -j RETURN
+    iptables -A DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 -j RETURN
 fi
 
 # Block everything else to containers (whitelist approach)
 iptables -A DOCKER-USER -j DROP
 
 # -----------------------------------------------------------------------------
-# IPv6 (minimal rules, mostly blocked)
+# IPv6 Rules
 # -----------------------------------------------------------------------------
 log_info "Configuring IPv6 firewall rules..."
 
+# IPv6 INPUT chain
 ip6tables -F INPUT
 ip6tables -A INPUT -i lo -j ACCEPT
 ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
 ip6tables -A INPUT -i tailscale0 -j ACCEPT  # Always allow (harmless if not installed)
 
+if [ "$MODE" = "public" ]; then
+    # PUBLIC MODE: Allow SSH, HTTP, HTTPS over IPv6
+    ip6tables -A INPUT -p tcp --dport 22 -j ACCEPT
+    ip6tables -A INPUT -p tcp --dport 80 -j ACCEPT
+    ip6tables -A INPUT -p tcp --dport 443 -j ACCEPT
+fi
+
 ip6tables -P INPUT DROP
-ip6tables -P FORWARD DROP
 ip6tables -P OUTPUT ACCEPT
+
+# IPv6 FORWARD chain (mirror IPv4 VPS-FORWARD logic)
+ip6tables -N VPS-FORWARD 2>/dev/null || ip6tables -F VPS-FORWARD
+ip6tables -A VPS-FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+ip6tables -A VPS-FORWARD -i tailscale0 -j RETURN
+ip6tables -A VPS-FORWARD -i docker0 -j RETURN
+ip6tables -A VPS-FORWARD -i br-+ -j RETURN
+
+if [ "$MODE" = "public" ]; then
+    ip6tables -A VPS-FORWARD -p tcp -m conntrack --ctorigdstport 80 -j RETURN
+    ip6tables -A VPS-FORWARD -p tcp -m conntrack --ctorigdstport 443 -j RETURN
+fi
+
+ip6tables -A VPS-FORWARD -j DROP
+ip6tables -D FORWARD -j VPS-FORWARD 2>/dev/null || true
+ip6tables -I FORWARD 1 -j VPS-FORWARD
+ip6tables -P FORWARD DROP
+
+# -----------------------------------------------------------------------------
+# Restart Docker to re-insert its chains properly
+# -----------------------------------------------------------------------------
+log_info "Restarting Docker to apply firewall rules..."
+systemctl restart docker
 
 # -----------------------------------------------------------------------------
 # Save iptables rules
@@ -567,13 +669,16 @@ if [ -f "$VERSION_FILE" ]; then
     LOCAL_VERSION=$(cat "$VERSION_FILE")
     REMOTE_VERSION=$(curl -sf "$REPO_API" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"v\?\([^"]*\)".*/\1/')
 
-    touch "$CHECK_FILE" 2>/dev/null
+    # Only update throttle file if curl succeeded (REMOTE_VERSION is set)
+    if [ -n "$REMOTE_VERSION" ]; then
+        touch "$CHECK_FILE" 2>/dev/null
 
-    if [ -n "$REMOTE_VERSION" ] && [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
-        echo ""
-        echo -e "\033[1;33m[vps-setup]\033[0m Update available: $LOCAL_VERSION → $REMOTE_VERSION"
-        echo "  curl -O https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh && sudo bash setup.sh"
-        echo ""
+        if [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
+            echo ""
+            echo -e "\033[1;33m[vps-setup]\033[0m Update available: $LOCAL_VERSION → $REMOTE_VERSION"
+            echo "  curl -O https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh && sudo bash setup.sh"
+            echo ""
+        fi
     fi
 fi
 UPDATEEOF
