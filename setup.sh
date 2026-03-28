@@ -359,10 +359,12 @@ fi
 
 # Restart SSH (existing sessions stay alive)
 # Ubuntu uses 'ssh' service, Debian uses 'sshd'
-if systemctl list-units --type=service | grep -q 'ssh.service'; then
+if systemctl is-active --quiet ssh 2>/dev/null; then
     systemctl restart ssh
-else
+elif systemctl is-active --quiet sshd 2>/dev/null; then
     systemctl restart sshd
+else
+    log_warn "Could not determine SSH service name, skipping restart"
 fi
 
 log_info "SSH hardened: password auth disabled, root login disabled"
