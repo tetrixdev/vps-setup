@@ -338,6 +338,9 @@ else
     # Update version in compose.yml
     sed -i "s/REPLACE_WITH_VERSION/$PROXY_VERSION/g" "$PROXY_DIR/compose.yml"
 
+    # Mark network as external (we create it above)
+    sed -i 's/main-network:/main-network:\n    external: true/' "$PROXY_DIR/compose.yml"
+
     # Create directories
     mkdir -p "$PROXY_DIR/letsencrypt"
 
