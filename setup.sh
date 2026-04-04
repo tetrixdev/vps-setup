@@ -32,10 +32,8 @@
 
 set -euo pipefail  # Exit on error, undefined variable, or pipeline failure
 
-SCRIPT_VERSION="2.0.0"
 CONFIG_FILE="/etc/vps-setup.conf"
-VERSION_FILE="/etc/vps-setup-version"
-UPDATE_CHECK_SCRIPT="/etc/profile.d/vps-setup-update-check.sh"
+COMMIT_FILE="/etc/vps-setup-commit"
 
 # -----------------------------------------------------------------------------
 # Colors and logging
@@ -665,49 +663,14 @@ cat > "$CONFIG_FILE" << EOF
 # Do not edit manually - this file is used to detect setup mode
 
 TAILSCALE_ENABLED=$([ "$SKIP_TAILSCALE" = false ] && echo "true" || echo "false")
-VERSION="$SCRIPT_VERSION"
 INSTALLED_AT="$(date -Iseconds)"
 EOF
 
-echo "$SCRIPT_VERSION" > "$VERSION_FILE"
-
-# Create update check script (runs on login)
-cat > "$UPDATE_CHECK_SCRIPT" << 'UPDATEEOF'
-#!/bin/bash
-# Check for vps-setup updates on login (once per day)
-
-VERSION_FILE="/etc/vps-setup-version"
-REPO_API="https://api.github.com/repos/tetrixdev/vps-setup/releases/latest"
-CHECK_FILE="/tmp/.vps-setup-check-$(id -u)"
-
-# Only check once per day per user
-if [ -f "$CHECK_FILE" ]; then
-    LAST_CHECK=$(stat -c %Y "$CHECK_FILE" 2>/dev/null || stat -f %m "$CHECK_FILE" 2>/dev/null || echo 0)
-    NOW=$(date +%s)
-    if [ $((NOW - LAST_CHECK)) -lt 86400 ]; then
-        return 0 2>/dev/null || exit 0
-    fi
+# Save the current main branch commit hash for tracking
+MAIN_COMMIT=$(curl -sf "https://api.github.com/repos/tetrixdev/vps-setup/commits/main" | grep '"sha"' | head -1 | sed 's/.*"\([a-f0-9]*\)".*/\1/')
+if [ -n "$MAIN_COMMIT" ]; then
+    echo "$MAIN_COMMIT" > "$COMMIT_FILE"
 fi
-
-if [ -f "$VERSION_FILE" ]; then
-    LOCAL_VERSION=$(cat "$VERSION_FILE")
-    REMOTE_VERSION=$(curl -sf "$REPO_API" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"v\?\([^"]*\)".*/\1/')
-
-    # Only update throttle file if curl succeeded (REMOTE_VERSION is set)
-    if [ -n "$REMOTE_VERSION" ]; then
-        touch "$CHECK_FILE" 2>/dev/null
-
-        if [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
-            echo ""
-            echo -e "\033[1;33m[vps-setup]\033[0m Update available: $LOCAL_VERSION → $REMOTE_VERSION"
-            echo "  curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | sudo bash"
-            echo ""
-        fi
-    fi
-fi
-UPDATEEOF
-
-chmod +x "$UPDATE_CHECK_SCRIPT"
 
 # =============================================================================
 # Complete
