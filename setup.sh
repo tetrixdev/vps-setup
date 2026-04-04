@@ -427,6 +427,9 @@ PermitEmptyPasswords no
 AcceptEnv *
 EOF
 
+# Ensure privilege separation directory exists (missing on some minimal installs)
+mkdir -p /run/sshd
+
 # Verify sshd config is valid before restarting
 if ! sshd -t 2>/dev/null; then
     log_error "SSH config validation failed. Restoring backup..."
