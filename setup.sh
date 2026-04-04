@@ -155,16 +155,23 @@ log_info "Detected: $DISTRO_ID $DISTRO_CODENAME"
 
 # Check for SSH key before we lock out password auth
 if [ ! -f /root/.ssh/authorized_keys ] || [ ! -s /root/.ssh/authorized_keys ]; then
-    log_error "No SSH keys found in /root/.ssh/authorized_keys"
-    log_error "Add your SSH key first, or you'll be locked out!"
-    echo ""
-    echo "To add your SSH key:"
-    echo "  1. On your LOCAL machine, run: cat ~/.ssh/id_ed25519.pub"
-    echo "  2. On this server, run:"
-    echo "     mkdir -p ~/.ssh && echo 'YOUR_KEY_HERE' >> ~/.ssh/authorized_keys"
-    exit 1
+    if [ "$SKIP_TAILSCALE" = true ]; then
+        # No Tailscale = no backup access method, SSH key required
+        log_error "No SSH keys found in /root/.ssh/authorized_keys"
+        log_error "Add your SSH key first, or you'll be locked out!"
+        echo ""
+        echo "To add your SSH key:"
+        echo "  1. On your LOCAL machine, run: cat ~/.ssh/id_ed25519.pub"
+        echo "  2. On this server, run:"
+        echo "     mkdir -p ~/.ssh && echo 'YOUR_KEY_HERE' >> ~/.ssh/authorized_keys"
+        exit 1
+    else
+        # Tailscale mode: Tailscale SSH provides backup access
+        log_warn "No SSH keys found - Tailscale SSH will be your only access method"
+    fi
+else
+    log_info "SSH key found - safe to proceed"
 fi
-log_info "SSH key found - safe to proceed"
 
 # Show what will happen
 echo ""
