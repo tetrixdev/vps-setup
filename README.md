@@ -1,18 +1,18 @@
 # VPS Setup
 
-Secures a fresh Ubuntu/Debian server for hosting web applications or private development environments.
+Secures a fresh Ubuntu/Debian server with Tailscale for secure access.
 
 **Time required**: ~5 minutes
 
 ---
 
-## Who This Is For
+## Quick Start
 
-This script is for people who want to securely run Docker containers **without needing to understand iptables, SSH hardening, or Docker networking**.
+```bash
+curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash
+```
 
-If you just want to deploy containers safely and don't want to worry about accidentally exposing a database port to the internet — this is for you. The script makes opinionated choices so you don't have to.
-
-**Not for you if:** You need custom firewall rules, non-standard port configurations, or want fine-grained control over every setting.
+Follow the Tailscale authentication prompt. Once connected, SSH is only accessible via Tailscale.
 
 ---
 
@@ -21,132 +21,138 @@ If you just want to deploy containers safely and don't want to worry about accid
 | Step | Action |
 |------|--------|
 | 1 | Updates system, enables automatic security patches |
-| 2 | Installs Docker with log rotation (50MB × 5 files per container) |
-| 3 | Hardens SSH (key-only auth, disables root login) |
-| 4 | Creates `admin` user with sudo + docker access |
-| 5 | Configures iptables firewall (whitelist approach) |
-| 6 | Creates 2GB swap file |
+| 2 | Installs Docker with log rotation (50MB x 5 files per container) |
+| 3 | Installs proxy-nginx reverse proxy (ports 80, 443) |
+| 4 | Installs and configures Tailscale |
+| 5 | Hardens SSH (key-only auth, disables root login) |
+| 6 | Creates `admin` user with sudo + docker access |
+| 7 | Configures iptables firewall (SSH via Tailscale only) |
+| 8 | Creates 2GB swap file |
 
 ---
 
-## Two Modes
+## Architecture
 
-| Mode | Command | Open Ports | Use Case |
-|------|---------|------------|----------|
-| **Public** | `--mode=public` | 22, 80, 443 + Tailscale | Web servers, public APIs |
-| **Private** | `--mode=private` | Tailscale only | Dev environments, sensitive workloads |
+```
+Default Setup (Tailscale)              No-Tailscale Setup
+========================               ==================
+SSH: Tailscale only (port 22 blocked)  SSH: Public (port 22 open)
+Web: Public (80/443 open)              Web: Public (80/443 open)
+Tailscale: Required                    Tailscale: Not installed
 
-Mode is **required** on first run. On subsequent runs, the script uses the stored mode automatically.
+Security: High                         Security: User's responsibility
+```
 
 ---
 
-## Prerequisites
+## Options
 
-- Fresh **Ubuntu 24.04** or **Debian 12** server
-- Your **SSH public key** added to the server
-- For private mode: **Tailscale** installed and connected first
+| Flag | Description |
+|------|-------------|
+| `--no-tailscale` | Skip Tailscale, expose SSH publicly (advanced users) |
+| `-y, --yes` | Non-interactive mode |
+| `-h, --help` | Show help |
+
+### Examples
+
+```bash
+# Default: Tailscale + proxy-nginx (recommended)
+curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash
+
+# With auth key (for automation)
+TAILSCALE_KEY=tskey-xxx curl -fsSL .../setup.sh | bash
+
+# Advanced: No Tailscale (user handles security themselves)
+curl -fsSL .../setup.sh | bash -s -- --no-tailscale
+```
 
 ---
 
-## Quick Start
+## Automation
 
-### 1. Create Your VPS
-
-| Setting | Recommended |
-|---------|-------------|
-| OS | Ubuntu 24.04 LTS |
-| Specs | 2+ vCPU, 2+ GB RAM |
-| SSH Key | **Add your public key** |
-| Firewall | Skip (script configures iptables) |
-
-### 2. SSH In and Run the Script
+For automated setups (e.g., PocketDev deploying to new servers):
 
 ```bash
-ssh root@<your-server-ip>
+TAILSCALE_KEY=tskey-auth-xxx curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash
 ```
 
-```bash
-curl -O https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh
-chmod +x setup.sh
-./setup.sh --mode=public
-```
-
-### 3. Test the New User
-
-**Before closing your root session**, open a new terminal and verify:
-
-```bash
-ssh admin@<your-server-ip>
-```
-
-If it works, you're done! Root login is now disabled.
+Generate an auth key at [Tailscale Admin Console](https://login.tailscale.com/admin/settings/keys).
 
 ---
 
-## Private Mode (Tailscale-Only)
+## After Setup
 
-For servers that should be completely invisible to the public internet:
-
-### 1. Install Tailscale First
-
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up --ssh
-```
-
-Follow the URL to authenticate. Note your Tailscale IP:
-
-```bash
-tailscale ip -4
-# Example: 100.64.0.5
-```
-
-### 2. Run Setup in Private Mode
-
-```bash
-./setup.sh --mode=private
-```
-
-### 3. Connect via Tailscale
-
-After setup, you can only reach the server through Tailscale:
+### Connect via Tailscale
 
 ```bash
 ssh admin@<tailscale-ip>
 ```
 
-The public IP will be completely unreachable.
+Find your Tailscale IP:
+```bash
+tailscale ip -4
+```
+
+### Add Web Apps
+
+proxy-nginx is pre-installed and ready for your web applications.
+
+```bash
+# Edit proxy-nginx config
+nano /opt/proxy-nginx/default.conf
+
+# Reload nginx after changes
+docker exec proxy-nginx nginx -s reload
+
+# Request SSL certificate
+docker exec -it proxy-nginx certbot --nginx -d your-domain.com
+```
+
+### Example Nginx Config
+
+Add this to `/opt/proxy-nginx/default.conf`:
+
+```nginx
+server {
+    server_name www.example.com;
+
+    client_max_body_size 256M;
+    ssl_buffer_size 1400;  # SSE streaming optimization
+
+    location / {
+        set $upstream http://your-app-nginx;
+        resolver 127.0.0.11 valid=30s;
+
+        proxy_pass $upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        # WebSocket/SSE support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    listen 80;
+}
+```
 
 ---
 
-## Usage
+## Idempotency
 
-```text
-./setup.sh --mode=<public|private>
+The script is safe to re-run:
 
-Modes:
-  --mode=public   Open ports 22, 80, 443 to the internet
-  --mode=private  Tailscale-only access (all public ports blocked)
-```
+- **First run**: Tailscale mode is determined by flags
+- **Subsequent runs**: Uses stored mode from `/etc/vps-setup.conf`
+- **Mode switching is blocked**: Cannot change between Tailscale/no-Tailscale
 
-### Examples
-
-```bash
-# Public web server
-./setup.sh --mode=public
-
-# Private dev server
-./setup.sh --mode=private
-
-# Re-run (uses stored mode)
-./setup.sh
-```
-
-### Mode Persistence
-
-- First run: `--mode` is required
-- Subsequent runs: Uses stored mode from `/etc/vps-setup-mode`
-- Switching modes is blocked (could lock you out)
+If you need to switch modes, create a new server.
 
 ---
 
@@ -158,72 +164,33 @@ Modes:
 - Root login: **disabled**
 - Key authentication: **required**
 
-Original config backed up to `/etc/ssh/sshd_config.backup`.
+Config stored at `/etc/ssh/sshd_config.d/00-vps-hardening.conf`.
 
 ### Firewall (iptables)
 
-**Both modes:**
-- Tailscale interface always allowed (harmless if not installed)
-- Loopback, established connections, ICMP allowed
-- Everything else dropped
+**Default (Tailscale):**
+- SSH (port 22): Tailscale only
+- HTTP (port 80): Public
+- HTTPS (port 443): Public
+- Tailscale interface: Allowed
 
-**Public mode additionally allows:**
-- TCP 22 (SSH)
-- TCP 80 (HTTP)
-- TCP 443 (HTTPS)
+**With `--no-tailscale`:**
+- SSH (port 22): Public
+- HTTP (port 80): Public
+- HTTPS (port 443): Public
 
 **Docker containers:**
-- Only reachable on whitelisted ports (80/443 in public mode, Tailscale in private)
+- Only reachable on whitelisted ports
 - Accidental `docker run -p 3306:3306` won't expose your database
 
 ### Docker
 
-- Log rotation: 50MB max × 5 files per container (250MB total)
+- Log rotation: 50MB max x 5 files per container
 - User added to `docker` group (no sudo needed)
 
 ### Automatic Updates
 
 Security patches applied automatically via `unattended-upgrades`.
-
----
-
-## Update Notifications
-
-The script installs an update checker that runs on login. When a new version is available:
-
-```text
-[vps-setup] Update available: 1.0.0 → 1.1.0
-  curl -O https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh && sudo bash setup.sh
-```
-
-The script is idempotent — safe to re-run without disruption. Custom iptables rules are preserved. Note that `/etc/docker/daemon.json` and SSH hardening config are overwritten on each run.
-
----
-
-## Adding SSH Keys
-
-If your VPS provider doesn't support adding SSH keys during creation:
-
-### On Your Local Machine
-
-```bash
-# View your public key
-cat ~/.ssh/id_ed25519.pub
-
-# Or generate one if you don't have it
-ssh-keygen -t ed25519
-```
-
-### On the Server
-
-```bash
-mkdir -p ~/.ssh
-echo 'YOUR_PUBLIC_KEY_HERE' >> ~/.ssh/authorized_keys
-chmod 700 ~/.ssh
-chmod 600 ~/.ssh/authorized_keys
-```
-
-Then run the setup script.
 
 ---
 
@@ -251,66 +218,24 @@ ssh admin@<server-ip>
 docker ps  # Should work now
 ```
 
-### Private mode: can't connect via Tailscale
+### Can't connect via Tailscale
 
 1. Check Tailscale is running on both devices: `tailscale status`
 2. Ensure both are logged into the same Tailscale account
 3. Check [Tailscale admin console](https://login.tailscale.com/admin/machines)
 
-### Script fails on non-Ubuntu/Debian
+### proxy-nginx won't start
 
-This script only supports Ubuntu and Debian. For other distributions, adapt the package installation commands.
-
----
-
-## Security Summary
-
-| Layer | Protection |
-|-------|------------|
-| **SSH** | Key-only authentication, no root login |
-| **Firewall** | Whitelist approach — only specified ports open |
-| **Docker** | Containers only reachable on whitelisted ports |
-| **Updates** | Automatic security patches |
-
----
-
-## Private Container Registries
-
-If you're pulling images from private registries (like GitHub Container Registry), you'll need to authenticate after setup.
-
-### GitHub Container Registry (ghcr.io)
-
-**Option 1: Forward token via SSH (recommended for automation)**
-
-The server accepts forwarded environment variables. If you have `GITHUB_TOKEN` set locally:
+Check for config errors:
 
 ```bash
-ssh -o SendEnv=GITHUB_TOKEN admin@server \
-  'echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin'
+docker exec proxy-nginx nginx -t
 ```
 
-The token is never visible in commands or logs — it's forwarded securely via SSH.
-
-> **Security note:** The server is configured with `AcceptEnv *` to allow any environment variable to be forwarded. This is intentional and safe in this security model: SSH access requires key-based authentication (passwords disabled), and the admin user has passwordless sudo. Anyone with SSH access already has full root privileges — accepting environment variables doesn't expand the attack surface.
-
-**Option 2: Manual login**
+View logs:
 
 ```bash
-# Generate a Personal Access Token at https://github.com/settings/tokens
-# with 'read:packages' scope, then:
-echo "YOUR_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
-```
-
-Both options store credentials in `~/.docker/config.json` (persists across reboots).
-
-### Other Registries
-
-```bash
-# Amazon ECR
-aws ecr get-login-password | docker login --username AWS --password-stdin YOUR_ECR_URL
-
-# Docker Hub (private repos)
-docker login -u YOUR_USERNAME
+docker logs proxy-nginx
 ```
 
 ---
@@ -319,15 +244,45 @@ docker login -u YOUR_USERNAME
 
 | Path | Purpose |
 |------|---------|
-| `/etc/vps-setup-version` | Installed version (for update checks) |
-| `/etc/vps-setup-mode` | Stored mode (public/private) |
-| `/etc/profile.d/vps-setup-update-check.sh` | Login update checker |
-| `/etc/ssh/sshd_config.backup` | Original SSH config backup |
-| `/etc/ssh/sshd_config.d/00-vps-hardening.conf` | SSH hardening (key-only, no root) |
+| `/etc/vps-setup-version` | Installed version (for tracking) |
+| `/etc/vps-setup.conf` | Configuration (Tailscale enabled/disabled) |
+| `/etc/ssh/sshd_config.d/00-vps-hardening.conf` | SSH hardening |
 | `/etc/sudoers.d/admin` | Passwordless sudo for admin user |
 | `/etc/iptables/rules.v4` | Saved IPv4 firewall rules |
 | `/etc/iptables/rules.v6` | Saved IPv6 firewall rules |
 | `/etc/docker/daemon.json` | Docker log rotation config |
+| `/opt/proxy-nginx/` | proxy-nginx installation |
+
+---
+
+## Security Summary
+
+| Layer | Protection |
+|-------|------------|
+| **SSH** | Key-only authentication, no root login |
+| **Network** | SSH via Tailscale only (by default) |
+| **Firewall** | Whitelist approach - only specified ports open |
+| **Docker** | Containers only reachable on whitelisted ports |
+| **Updates** | Automatic security patches |
+
+---
+
+## Private Container Registries
+
+If you're pulling images from private registries (like GitHub Container Registry), authenticate after setup:
+
+### GitHub Container Registry (ghcr.io)
+
+```bash
+# Forward token via SSH (recommended)
+ssh -o SendEnv=GITHUB_TOKEN admin@server \
+  'echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin'
+
+# Or manual login
+echo "YOUR_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+```
+
+Credentials persist in `~/.docker/config.json`.
 
 ---
 

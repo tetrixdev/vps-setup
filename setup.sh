@@ -3,25 +3,28 @@
 # VPS Setup Script
 # =============================================================================
 #
-# Secures a fresh Ubuntu/Debian server for hosting web applications or
-# private development environments.
+# Secures a fresh Ubuntu/Debian server with Tailscale for secure access.
 #
 # USAGE:
-#   ./setup.sh --mode=public   Public web server (ports 22, 80, 443)
-#   ./setup.sh --mode=private  Private server (Tailscale-only)
+#   ./setup.sh                    # Default: Tailscale + proxy-nginx (recommended)
+#   ./setup.sh --no-tailscale     # Advanced: Skip Tailscale (you handle SSH security)
 #
 # WHAT IT DOES:
 #   1. Updates system and enables automatic security patches
 #   2. Installs Docker with log rotation
-#   3. Hardens SSH (key-only auth, no root login)
-#   4. Creates 'admin' user with sudo and docker access
-#   5. Configures iptables firewall
-#   6. Creates swap file (if none exists)
+#   3. Installs proxy-nginx reverse proxy
+#   4. Installs and configures Tailscale (SSH via Tailscale only)
+#   5. Hardens SSH (key-only auth, no root login)
+#   6. Creates 'admin' user with sudo and docker access
+#   7. Configures iptables firewall
+#   8. Creates swap file (if none exists)
 #
 # PREREQUISITES:
 #   - Fresh Ubuntu 24.04 or Debian 12 server
 #   - SSH key already added (you'll be locked out without one!)
-#   - For --mode=private: Tailscale installed and connected first
+#
+# ENVIRONMENT VARIABLES:
+#   TAILSCALE_KEY    - Auth key for unattended Tailscale setup
 #
 # REPOSITORY: https://github.com/tetrixdev/vps-setup
 #
@@ -29,9 +32,9 @@
 
 set -euo pipefail  # Exit on error, undefined variable, or pipeline failure
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="2.0.0"
+CONFIG_FILE="/etc/vps-setup.conf"
 VERSION_FILE="/etc/vps-setup-version"
-MODE_FILE="/etc/vps-setup-mode"
 UPDATE_CHECK_SCRIPT="/etc/profile.d/vps-setup-update-check.sh"
 
 # -----------------------------------------------------------------------------
@@ -51,43 +54,39 @@ log_step() { echo -e "\n${BLUE}==>${NC} ${1:-}"; }
 # -----------------------------------------------------------------------------
 # Parse arguments
 # -----------------------------------------------------------------------------
-MODE=""
+SKIP_TAILSCALE=false
+TAILSCALE_KEY="${TAILSCALE_KEY:-}"
 USERNAME="admin"
+
+show_help() {
+    echo "Usage: $0 [options]"
+    echo ""
+    echo "Options:"
+    echo "  --no-tailscale    Skip Tailscale installation (advanced users only)"
+    echo "  -y, --yes         Non-interactive mode (skip confirmations)"
+    echo "  -h, --help        Show this help message"
+    echo ""
+    echo "Environment variables:"
+    echo "  TAILSCALE_KEY     Auth key for unattended Tailscale setup"
+    echo ""
+    echo "Examples:"
+    echo "  $0                                    # Default setup with Tailscale"
+    echo "  TAILSCALE_KEY=tskey-xxx $0            # Unattended setup"
+    echo "  $0 --no-tailscale                     # Skip Tailscale (not recommended)"
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --mode)
-            if [ -z "${2:-}" ] || [[ "${2:-}" == -* ]]; then
-                log_error "--mode requires a value (public or private)"
-                exit 1
-            fi
-            if [ "$2" != "public" ] && [ "$2" != "private" ]; then
-                log_error "Invalid mode: $2"
-                echo "Mode must be 'public' or 'private'"
-                exit 1
-            fi
-            MODE="$2"
-            shift 2
+        --no-tailscale)
+            SKIP_TAILSCALE=true
+            shift
             ;;
-        --mode=*)
-            MODE="${1#*=}"
-            if [ "$MODE" != "public" ] && [ "$MODE" != "private" ]; then
-                log_error "Invalid mode: $MODE"
-                echo "Mode must be 'public' or 'private'"
-                exit 1
-            fi
+        -y|--yes)
+            # Currently unused, but reserved for future non-interactive mode
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 --mode=<public|private>"
-            echo ""
-            echo "Modes:"
-            echo "  --mode=public   Open ports 22, 80, 443 to the internet"
-            echo "  --mode=private  Tailscale-only access (all public ports blocked)"
-            echo ""
-            echo "Examples:"
-            echo "  $0 --mode=public   # Public web server"
-            echo "  $0 --mode=private  # Private dev server"
+            show_help
             exit 0
             ;;
         *)
@@ -105,50 +104,40 @@ log_step "Running pre-flight checks..."
 
 # Must run as root
 if [ "$EUID" -ne 0 ]; then
-    log_error "Please run as root: sudo $0 --mode=<public|private>"
+    log_error "Please run as root: sudo $0"
     exit 1
 fi
 
 # -----------------------------------------------------------------------------
-# Mode handling: require mode on first run, enforce consistency on re-run
+# Check for mode mismatch (prevent switching between Tailscale/no-Tailscale)
 # -----------------------------------------------------------------------------
-if [ -f "$MODE_FILE" ]; then
-    STORED_MODE=$(cat "$MODE_FILE")
+if [ -f "$CONFIG_FILE" ]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+    STORED_TAILSCALE="${TAILSCALE_ENABLED:-}"
 
-    if [ -z "$MODE" ]; then
-        # Re-run without --mode: use stored mode
-        MODE="$STORED_MODE"
-        log_info "Using previously configured mode: $MODE"
-    elif [ "$MODE" != "$STORED_MODE" ]; then
-        # Trying to switch modes: not allowed
-        log_error "Cannot switch modes. This server is configured as '$STORED_MODE'."
-        log_error "Switching from $STORED_MODE to $MODE could lock you out."
+    if [ "$SKIP_TAILSCALE" = false ] && [ "$STORED_TAILSCALE" = "false" ]; then
+        log_error "This server was set up WITHOUT Tailscale."
+        log_error "Cannot add Tailscale to an existing no-Tailscale setup."
         echo ""
-        echo "If you really need to switch modes, manually remove $MODE_FILE first."
+        echo "If you need Tailscale, create a new server and run setup without --no-tailscale."
         exit 1
     fi
-else
-    # First run: mode is required
-    if [ -z "$MODE" ]; then
-        log_error "Mode is required on first run."
+
+    if [ "$SKIP_TAILSCALE" = true ] && [ "$STORED_TAILSCALE" = "true" ]; then
+        log_error "This server was set up WITH Tailscale."
+        log_error "Cannot switch to --no-tailscale mode."
         echo ""
-        echo "Usage: $0 --mode=<public|private>"
-        echo ""
-        echo "  --mode=public   For web servers (opens ports 22, 80, 443)"
-        echo "  --mode=private  For dev environments (Tailscale-only access)"
+        echo "If you need a no-Tailscale setup, create a new server."
         exit 1
     fi
-fi
 
-# Validate mode value
-if [ "$MODE" != "public" ] && [ "$MODE" != "private" ]; then
-    log_error "Invalid mode: $MODE"
-    echo "Mode must be 'public' or 'private'"
-    exit 1
+    log_info "Re-running setup (mode unchanged)"
 fi
 
 # Detect distro
 if [ -f /etc/os-release ]; then
+    # shellcheck source=/dev/null
     . /etc/os-release
     DISTRO_ID="$ID"
     DISTRO_CODENAME="$VERSION_CODENAME"
@@ -163,7 +152,6 @@ if [ "$DISTRO_ID" != "ubuntu" ] && [ "$DISTRO_ID" != "debian" ]; then
 fi
 
 log_info "Detected: $DISTRO_ID $DISTRO_CODENAME"
-log_info "Mode: $MODE"
 
 # Check for SSH key before we lock out password auth
 if [ ! -f /root/.ssh/authorized_keys ] || [ ! -s /root/.ssh/authorized_keys ]; then
@@ -178,57 +166,40 @@ if [ ! -f /root/.ssh/authorized_keys ] || [ ! -s /root/.ssh/authorized_keys ]; t
 fi
 log_info "SSH key found - safe to proceed"
 
-# Private mode requires Tailscale
-if [ "$MODE" = "private" ]; then
-    if ! command -v tailscale &> /dev/null; then
-        log_error "Private mode requires Tailscale. Install it first:"
-        echo "  curl -fsSL https://tailscale.com/install.sh | sh"
-        echo "  sudo tailscale up --ssh"
-        exit 1
-    fi
-
-    if ! tailscale status &> /dev/null; then
-        log_error "Tailscale is installed but not connected."
-        echo "  Run: sudo tailscale up --ssh"
-        exit 1
-    fi
-
-    TAILSCALE_IP=$(tailscale ip -4)
-    log_info "Tailscale connected: $TAILSCALE_IP"
-fi
-
 # Show what will happen
 echo ""
-if [ "$MODE" = "private" ]; then
-    log_warn "PRIVATE MODE: Server will only be accessible via Tailscale"
+if [ "$SKIP_TAILSCALE" = true ]; then
+    log_warn "NO-TAILSCALE MODE: SSH will be publicly accessible (port 22)"
+    log_warn "You are responsible for SSH security!"
     echo ""
     echo "This script will:"
     echo "  1. Update system and enable automatic security updates"
     echo "  2. Install Docker with log rotation"
-    echo "  3. Harden SSH (key-only, no root login)"
-    echo "  4. Configure 'admin' user with sudo + docker access"
-    echo "  5. Configure firewall (Tailscale-only, all public ports blocked)"
-    echo "  6. Create 2GB swap file"
-    echo ""
-    log_warn "Make sure you're connected via Tailscale IP: $TAILSCALE_IP"
-    log_warn "Public IP access will be completely blocked!"
+    echo "  3. Install proxy-nginx reverse proxy"
+    echo "  4. Skip Tailscale (--no-tailscale)"
+    echo "  5. Harden SSH (key-only, no root login)"
+    echo "  6. Configure 'admin' user with sudo + docker access"
+    echo "  7. Configure firewall (SSH, HTTP, HTTPS open)"
+    echo "  8. Create 2GB swap file"
 else
-    log_warn "PUBLIC MODE: Ports 22, 80, 443 will be open to the internet"
+    log_info "SECURE MODE: SSH will only be accessible via Tailscale"
     echo ""
     echo "This script will:"
     echo "  1. Update system and enable automatic security updates"
     echo "  2. Install Docker with log rotation"
-    echo "  3. Harden SSH (key-only, no root login)"
-    echo "  4. Configure 'admin' user with sudo + docker access"
-    echo "  5. Configure firewall (allow SSH, HTTP, HTTPS only)"
-    echo "  6. Create 2GB swap file"
+    echo "  3. Install proxy-nginx reverse proxy"
+    echo "  4. Install and configure Tailscale"
+    echo "  5. Harden SSH (key-only, no root login)"
+    echo "  6. Configure 'admin' user with sudo + docker access"
+    echo "  7. Configure firewall (SSH via Tailscale only, web public)"
+    echo "  8. Create 2GB swap file"
 fi
 echo ""
 
 # =============================================================================
 # STEP 1: System Updates
 # =============================================================================
-log_step "Step 1/6: Updating system..."
+log_step "Step 1/8: Updating system..."
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -242,7 +213,7 @@ apt-get update
 apt-get upgrade -y
 
 # Install essentials
-apt-get install -y git nano curl wget gnupg ca-certificates
+apt-get install -y git nano curl wget gnupg ca-certificates jq
 
 # Configure unattended-upgrades
 log_info "Configuring automatic security updates..."
@@ -270,7 +241,7 @@ log_info "System updated, automatic security updates enabled"
 # =============================================================================
 # STEP 2: Install Docker
 # =============================================================================
-log_step "Step 2/6: Installing Docker..."
+log_step "Step 2/8: Installing Docker..."
 
 # Check if Docker is already installed
 if command -v docker &> /dev/null; then
@@ -322,9 +293,116 @@ fi
 log_info "Docker installed and configured"
 
 # =============================================================================
-# STEP 3: SSH Hardening
+# STEP 3: Install Proxy-Nginx
 # =============================================================================
-log_step "Step 3/6: Hardening SSH..."
+log_step "Step 3/8: Installing proxy-nginx..."
+
+# Create main-network if not exists
+if ! docker network ls --format '{{.Name}}' | grep -q '^main-network$'; then
+    docker network create main-network
+    log_info "Created Docker network: main-network"
+else
+    log_info "Docker network main-network already exists"
+fi
+
+# Check if proxy-nginx already running
+if docker ps --format '{{.Names}}' | grep -q '^proxy-nginx$'; then
+    log_info "proxy-nginx already running"
+else
+    # Get latest version
+    PROXY_VERSION=$(curl -sf "https://api.github.com/repos/tetrixdev/proxy-nginx/releases/latest" | jq -r '.tag_name' | sed 's/^v//')
+
+    if [ -z "$PROXY_VERSION" ] || [ "$PROXY_VERSION" = "null" ]; then
+        log_error "Could not fetch proxy-nginx version from GitHub"
+        exit 1
+    fi
+
+    log_info "Installing proxy-nginx v${PROXY_VERSION}..."
+
+    PROXY_DIR="/opt/proxy-nginx"
+    mkdir -p "$PROXY_DIR"
+    cd "$PROXY_DIR"
+
+    # Download release
+    curl -fsSL "https://github.com/tetrixdev/proxy-nginx/archive/refs/tags/v${PROXY_VERSION}.tar.gz" -o /tmp/proxy-nginx.tar.gz
+    tar -xzf /tmp/proxy-nginx.tar.gz -C /tmp
+
+    # Copy files
+    cp "/tmp/proxy-nginx-${PROXY_VERSION}/compose/compose.yml" "$PROXY_DIR/"
+
+    # Only copy default.conf if it doesn't exist (preserve user config)
+    if [ ! -f "$PROXY_DIR/default.conf" ]; then
+        cp "/tmp/proxy-nginx-${PROXY_VERSION}/compose/default.conf" "$PROXY_DIR/"
+    fi
+
+    # Update version in compose.yml
+    sed -i "s/REPLACE_WITH_VERSION/$PROXY_VERSION/g" "$PROXY_DIR/compose.yml"
+
+    # Create directories
+    mkdir -p "$PROXY_DIR/letsencrypt"
+
+    # Cleanup
+    rm -rf /tmp/proxy-nginx.tar.gz /tmp/proxy-nginx-*
+
+    # Start proxy-nginx
+    docker compose pull
+    docker compose up -d
+
+    log_info "proxy-nginx v${PROXY_VERSION} installed"
+fi
+
+# =============================================================================
+# STEP 4: Install Tailscale
+# =============================================================================
+TAILSCALE_IP=""
+
+if [ "$SKIP_TAILSCALE" = false ]; then
+    log_step "Step 4/8: Installing Tailscale..."
+
+    # Install if not present
+    if ! command -v tailscale &> /dev/null; then
+        log_info "Installing Tailscale..."
+        curl -fsSL https://tailscale.com/install.sh | sh
+    else
+        log_info "Tailscale already installed"
+    fi
+
+    # Check if already authenticated
+    if tailscale status &> /dev/null; then
+        TAILSCALE_IP=$(tailscale ip -4)
+        log_info "Tailscale already connected: $TAILSCALE_IP"
+    else
+        # Need to authenticate
+        if [ -n "$TAILSCALE_KEY" ]; then
+            log_info "Authenticating with provided auth key..."
+            tailscale up --auth-key="$TAILSCALE_KEY" --ssh
+        else
+            log_info "Please authenticate Tailscale (follow the URL):"
+            tailscale up --ssh
+        fi
+
+        # Wait a moment for connection
+        sleep 2
+
+        # Verify connection
+        if tailscale status &> /dev/null; then
+            TAILSCALE_IP=$(tailscale ip -4)
+            log_info "Tailscale connected: $TAILSCALE_IP"
+        else
+            log_error "Tailscale authentication failed"
+            log_error "Run 'tailscale up --ssh' manually to authenticate"
+            exit 1
+        fi
+    fi
+else
+    log_step "Step 4/8: Skipping Tailscale (--no-tailscale)"
+    log_warn "SSH will be publicly accessible. You are responsible for security."
+fi
+
+# =============================================================================
+# STEP 5: SSH Hardening
+# =============================================================================
+log_step "Step 5/8: Hardening SSH..."
 
 # Backup original config (only once)
 if [ ! -f /etc/ssh/sshd_config.backup ]; then
@@ -370,9 +448,9 @@ fi
 log_info "SSH hardened: password auth disabled, root login disabled"
 
 # =============================================================================
-# STEP 4: Configure User
+# STEP 6: Configure User
 # =============================================================================
-log_step "Step 4/6: Configuring user '$USERNAME'..."
+log_step "Step 6/8: Configuring user '$USERNAME'..."
 
 if id "$USERNAME" &>/dev/null; then
     log_info "User '$USERNAME' already exists"
@@ -413,9 +491,9 @@ chmod 440 "/etc/sudoers.d/$USERNAME"
 log_info "User '$USERNAME' configured with sudo + docker access"
 
 # =============================================================================
-# STEP 5: Configure Firewall (iptables)
+# STEP 7: Configure Firewall (iptables)
 # =============================================================================
-log_step "Step 5/6: Configuring firewall..."
+log_step "Step 7/8: Configuring firewall..."
 
 # Install iptables-persistent (non-interactive)
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
@@ -450,15 +528,21 @@ ipt_add INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 # Allow ICMP (ping)
 ipt_add INPUT -p icmp -j ACCEPT
 
-# Always allow Tailscale (harmless if not installed - interface won't exist)
+# Always allow Tailscale interface and UDP port
 ipt_add INPUT -i tailscale0 -j ACCEPT
 ipt_add INPUT -p udp --dport 41641 -j ACCEPT
 
-if [ "$MODE" = "public" ]; then
-    # PUBLIC MODE: Also allow SSH, HTTP, HTTPS
+# Web traffic always allowed (proxy-nginx handles it)
+ipt_add INPUT -p tcp --dport 80 -j ACCEPT
+ipt_add INPUT -p tcp --dport 443 -j ACCEPT
+
+if [ "$SKIP_TAILSCALE" = true ]; then
+    # No-Tailscale mode: also allow public SSH
+    log_warn "Opening SSH (port 22) to public (--no-tailscale mode)"
     ipt_add INPUT -p tcp --dport 22 -j ACCEPT
-    ipt_add INPUT -p tcp --dport 80 -j ACCEPT
-    ipt_add INPUT -p tcp --dport 443 -j ACCEPT
+else
+    # Default: SSH only via Tailscale (no public SSH rule)
+    log_info "SSH accessible only via Tailscale (port 22 blocked from public)"
 fi
 
 # Now set INPUT policy to DROP (after rules are in place)
@@ -467,10 +551,6 @@ iptables -P INPUT DROP
 # -----------------------------------------------------------------------------
 # DOCKER-USER chain (container access control)
 # -----------------------------------------------------------------------------
-# Docker preserves DOCKER-USER across restarts and inserts a jump to it at
-# the beginning of FORWARD. Rules here run BEFORE Docker's ACCEPT rules.
-# This is Docker's recommended approach for user firewall rules.
-
 log_info "Configuring Docker firewall rules..."
 
 # Create DOCKER-USER chain if it doesn't exist
@@ -489,11 +569,9 @@ ipt_add DOCKER-USER -s 172.16.0.0/12 ! -d 172.16.0.0/12 -j RETURN
 # Always allow Tailscale to reach containers
 ipt_add DOCKER-USER -i tailscale0 -j RETURN
 
-if [ "$MODE" = "public" ]; then
-    # PUBLIC MODE: Allow web traffic to reach containers (ports 80, 443)
-    ipt_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 80 -j RETURN
-    ipt_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 -j RETURN
-fi
+# Allow web traffic to reach containers (ports 80, 443)
+ipt_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 80 -j RETURN
+ipt_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 -j RETURN
 
 # Block everything else to containers (must be last)
 # This prevents accidental exposure (e.g., docker run -p 3306:3306 won't work)
@@ -514,11 +592,13 @@ ipt6_add INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 ipt6_add INPUT -p ipv6-icmp -j ACCEPT
 ipt6_add INPUT -i tailscale0 -j ACCEPT
 
-if [ "$MODE" = "public" ]; then
-    # PUBLIC MODE: Allow SSH, HTTP, HTTPS over IPv6
+# Web traffic always allowed
+ipt6_add INPUT -p tcp --dport 80 -j ACCEPT
+ipt6_add INPUT -p tcp --dport 443 -j ACCEPT
+
+if [ "$SKIP_TAILSCALE" = true ]; then
+    # No-Tailscale mode: also allow public SSH over IPv6
     ipt6_add INPUT -p tcp --dport 22 -j ACCEPT
-    ipt6_add INPUT -p tcp --dport 80 -j ACCEPT
-    ipt6_add INPUT -p tcp --dport 443 -j ACCEPT
 fi
 
 # Now set INPUT policy to DROP (after rules are in place)
@@ -530,12 +610,8 @@ ipt6_add DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 ipt6_add DOCKER-USER -i docker0 -o docker0 -j RETURN
 ipt6_add DOCKER-USER -i br-+ -o br-+ -j RETURN
 ipt6_add DOCKER-USER -i tailscale0 -j RETURN
-
-if [ "$MODE" = "public" ]; then
-    ipt6_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 80 -j RETURN
-    ipt6_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 -j RETURN
-fi
-
+ipt6_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 80 -j RETURN
+ipt6_add DOCKER-USER -p tcp -m conntrack --ctorigdstport 443 -j RETURN
 ipt6_add DOCKER-USER -j DROP
 
 # -----------------------------------------------------------------------------
@@ -544,16 +620,16 @@ ipt6_add DOCKER-USER -j DROP
 iptables-save > /etc/iptables/rules.v4
 ip6tables-save > /etc/iptables/rules.v6
 
-if [ "$MODE" = "private" ]; then
-    log_info "Firewall configured: Tailscale-only access"
+if [ "$SKIP_TAILSCALE" = true ]; then
+    log_info "Firewall configured: SSH (22), HTTP (80), HTTPS (443)"
 else
-    log_info "Firewall configured: SSH (22), HTTP (80), HTTPS (443) + Tailscale"
+    log_info "Firewall configured: HTTP (80), HTTPS (443) + Tailscale (SSH via Tailscale only)"
 fi
 
 # =============================================================================
-# STEP 6: Create Swap File
+# STEP 8: Create Swap File
 # =============================================================================
-log_step "Step 6/6: Configuring swap..."
+log_step "Step 8/8: Configuring swap..."
 
 if [ -f /swapfile ] || [ "$(swapon --show | wc -l)" -gt 0 ]; then
     log_info "Swap already exists, skipping"
@@ -577,11 +653,20 @@ else
 fi
 
 # =============================================================================
-# Save mode and version
+# Save configuration
 # =============================================================================
 log_info "Saving configuration..."
 
-echo "$MODE" > "$MODE_FILE"
+cat > "$CONFIG_FILE" << EOF
+# VPS Setup Configuration
+# Generated: $(date -Iseconds)
+# Do not edit manually - this file is used to detect setup mode
+
+TAILSCALE_ENABLED=$([ "$SKIP_TAILSCALE" = false ] && echo "true" || echo "false")
+VERSION="$SCRIPT_VERSION"
+INSTALLED_AT="$(date -Iseconds)"
+EOF
+
 echo "$SCRIPT_VERSION" > "$VERSION_FILE"
 
 # Create update check script (runs on login)
@@ -613,7 +698,7 @@ if [ -f "$VERSION_FILE" ]; then
         if [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
             echo ""
             echo -e "\033[1;33m[vps-setup]\033[0m Update available: $LOCAL_VERSION → $REMOTE_VERSION"
-            echo "  curl -O https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh && sudo bash setup.sh"
+            echo "  curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | sudo bash"
             echo ""
         fi
     fi
@@ -630,35 +715,47 @@ echo "==========================================================================
 echo -e "${GREEN}Setup Complete!${NC}"
 echo "============================================================================="
 echo ""
-if [ "$MODE" = "private" ]; then
-    echo "Your server is now configured with:"
-    echo "  ✓ Automatic security updates"
-    echo "  ✓ Docker with log rotation (50MB × 5 files per container)"
-    echo "  ✓ SSH: key-only, no root login"
-    echo "  ✓ User 'admin' with sudo + docker"
-    echo "  ✓ Firewall: Tailscale-only (all public ports blocked)"
-    echo "  ✓ 2GB swap file"
-    echo ""
-    echo "Connect via:"
-    echo "  ssh $USERNAME@$TAILSCALE_IP"
+echo "Installed:"
+echo "  ✓ Automatic security updates"
+echo "  ✓ Docker with log rotation (50MB × 5 files per container)"
+echo "  ✓ proxy-nginx reverse proxy (ports 80, 443)"
+if [ "$SKIP_TAILSCALE" = false ]; then
+    echo "  ✓ Tailscale (SSH via Tailscale only)"
 else
-    echo "Your server is now configured with:"
-    echo "  ✓ Automatic security updates"
-    echo "  ✓ Docker with log rotation (50MB × 5 files per container)"
-    echo "  ✓ SSH: key-only, no root login"
-    echo "  ✓ User 'admin' with sudo + docker"
-    echo "  ✓ Firewall: ports 22, 80, 443 + Tailscale"
-    echo "  ✓ 2GB swap file"
-    echo ""
-    echo "Connect via:"
-    echo "  ssh $USERNAME@<your-server-ip>"
+    echo "  ✗ Tailscale (skipped - SSH publicly accessible)"
 fi
+echo "  ✓ SSH: key-only, no root login"
+echo "  ✓ User 'admin' with sudo + docker"
+echo "  ✓ Firewall configured"
+echo "  ✓ 2GB swap file"
+echo ""
+if [ "$SKIP_TAILSCALE" = false ]; then
+    echo "Connect via Tailscale:"
+    echo "  ssh $USERNAME@$TAILSCALE_IP"
+    echo ""
+    log_info "SSH is only accessible via Tailscale. Public SSH is blocked."
+else
+    echo "Connect via:"
+    echo "  ssh $USERNAME@<public-ip>"
+    echo ""
+    log_warn "SSH is publicly accessible (port 22). Consider using Tailscale."
+fi
+echo ""
+echo "Add web apps:"
+echo "  1. Edit: nano /opt/proxy-nginx/default.conf"
+echo "  2. Reload: docker exec proxy-nginx nginx -s reload"
+echo "  3. SSL: docker exec -it proxy-nginx certbot --nginx -d your-domain.com"
 echo ""
 echo "============================================================================="
 echo ""
 log_warn "IMPORTANT: Root login is now disabled."
 log_warn "Test the new user login BEFORE closing this session!"
 echo ""
-echo "In a NEW terminal, run:"
-echo "  ssh $USERNAME@<server-ip>"
+if [ "$SKIP_TAILSCALE" = false ]; then
+    echo "In a NEW terminal, run:"
+    echo "  ssh $USERNAME@$TAILSCALE_IP"
+else
+    echo "In a NEW terminal, run:"
+    echo "  ssh $USERNAME@<public-ip>"
+fi
 echo ""
