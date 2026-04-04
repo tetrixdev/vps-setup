@@ -297,14 +297,6 @@ log_info "Docker installed and configured"
 # =============================================================================
 log_step "Step 3/8: Installing proxy-nginx..."
 
-# Create main-network if not exists
-if ! docker network ls --format '{{.Name}}' | grep -q '^main-network$'; then
-    docker network create main-network
-    log_info "Created Docker network: main-network"
-else
-    log_info "Docker network main-network already exists"
-fi
-
 # Check if proxy-nginx already running
 if docker ps --format '{{.Names}}' | grep -q '^proxy-nginx$'; then
     log_info "proxy-nginx already running"
@@ -337,9 +329,6 @@ else
 
     # Update version in compose.yml
     sed -i "s/REPLACE_WITH_VERSION/$PROXY_VERSION/g" "$PROXY_DIR/compose.yml"
-
-    # Mark network as external (we create it above)
-    sed -i 's/main-network:/main-network:\n    external: true/' "$PROXY_DIR/compose.yml"
 
     # Create directories
     mkdir -p "$PROXY_DIR/letsencrypt"
