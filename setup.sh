@@ -313,7 +313,6 @@ else
 
     PROXY_DIR="/opt/proxy-nginx"
     mkdir -p "$PROXY_DIR"
-    cd "$PROXY_DIR"
 
     # Download release
     curl -fsSL "https://github.com/tetrixdev/proxy-nginx/archive/refs/tags/v${PROXY_VERSION}.tar.gz" -o /tmp/proxy-nginx.tar.gz
@@ -337,8 +336,8 @@ else
     rm -rf /tmp/proxy-nginx.tar.gz /tmp/proxy-nginx-*
 
     # Start proxy-nginx
-    docker compose pull
-    docker compose up -d
+    docker compose -f "$PROXY_DIR/compose.yml" pull
+    docker compose -f "$PROXY_DIR/compose.yml" up -d
 
     log_info "proxy-nginx v${PROXY_VERSION} installed"
 fi

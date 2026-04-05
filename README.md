@@ -207,7 +207,8 @@ If you ran the script without an SSH key and got locked out:
 2. Remove the hardening config:
    ```bash
    rm /etc/ssh/sshd_config.d/00-vps-hardening.conf
-   systemctl restart sshd
+   systemctl restart ssh   # Ubuntu
+   # or: systemctl restart sshd   # Debian
    ```
 3. Add your SSH key properly, then re-run the script
 
