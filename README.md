@@ -43,6 +43,8 @@ Tailscale: Required                    Tailscale: Not installed
 Security: High                         Security: User's responsibility
 ```
 
+> **Note:** When using `--no-tailscale`, SSH is publicly accessible. While key-only authentication provides strong protection, consider adding brute-force protection like [fail2ban](https://github.com/fail2ban/fail2ban) for additional security.
+
 ---
 
 ## Options
@@ -50,7 +52,6 @@ Security: High                         Security: User's responsibility
 | Flag | Description |
 |------|-------------|
 | `--no-tailscale` | Skip Tailscale, expose SSH publicly (advanced users) |
-| `-y, --yes` | Non-interactive mode |
 | `-h, --help` | Show help |
 
 ### Examples
@@ -60,10 +61,11 @@ Security: High                         Security: User's responsibility
 curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash
 
 # With auth key (for automation)
-TAILSCALE_KEY=tskey-xxx curl -fsSL .../setup.sh | bash
+export TAILSCALE_KEY=tskey-xxx
+curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash
 
 # Advanced: No Tailscale (user handles security themselves)
-curl -fsSL .../setup.sh | bash -s -- --no-tailscale
+curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash -s -- --no-tailscale
 ```
 
 ---
@@ -73,7 +75,8 @@ curl -fsSL .../setup.sh | bash -s -- --no-tailscale
 For automated setups (e.g., PocketDev deploying to new servers):
 
 ```bash
-TAILSCALE_KEY=tskey-auth-xxx curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash
+export TAILSCALE_KEY=tskey-auth-xxx
+curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash
 ```
 
 Generate an auth key at [Tailscale Admin Console](https://login.tailscale.com/admin/settings/keys).
@@ -244,7 +247,7 @@ docker logs proxy-nginx
 
 | Path | Purpose |
 |------|---------|
-| `/etc/vps-setup-version` | Installed version (for tracking) |
+| `/etc/vps-setup-commit` | Git commit hash at install time |
 | `/etc/vps-setup.conf` | Configuration (Tailscale enabled/disabled) |
 | `/etc/ssh/sshd_config.d/00-vps-hardening.conf` | SSH hardening |
 | `/etc/sudoers.d/admin` | Passwordless sudo for admin user |

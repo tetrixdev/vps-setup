@@ -61,7 +61,6 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  --no-tailscale    Skip Tailscale installation (advanced users only)"
-    echo "  -y, --yes         Non-interactive mode (skip confirmations)"
     echo "  -h, --help        Show this help message"
     echo ""
     echo "Environment variables:"
@@ -77,10 +76,6 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --no-tailscale)
             SKIP_TAILSCALE=true
-            shift
-            ;;
-        -y|--yes)
-            # Currently unused, but reserved for future non-interactive mode
             shift
             ;;
         -h|--help)
@@ -372,7 +367,11 @@ if [ "$SKIP_TAILSCALE" = false ]; then
         # Need to authenticate
         if [ -n "$TAILSCALE_KEY" ]; then
             log_info "Authenticating with provided auth key..."
-            tailscale up --auth-key="$TAILSCALE_KEY" --ssh
+            if ! tailscale up --auth-key="$TAILSCALE_KEY" --ssh; then
+                log_error "Tailscale authentication failed with provided key"
+                log_error "Check that your TAILSCALE_KEY is valid and not expired"
+                exit 1
+            fi
         else
             log_info "Please authenticate Tailscale (follow the URL):"
             tailscale up --ssh
@@ -465,20 +464,25 @@ usermod -aG sudo "$USERNAME"
 # Add to docker group
 usermod -aG docker "$USERNAME"
 
-# Copy SSH keys from root (if user doesn't have them yet)
+# Copy SSH keys from root (if available and user doesn't have them yet)
 USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
 mkdir -p "$USER_HOME/.ssh"
 
-if [ ! -f "$USER_HOME/.ssh/authorized_keys" ] || [ ! -s "$USER_HOME/.ssh/authorized_keys" ]; then
-    cp /root/.ssh/authorized_keys "$USER_HOME/.ssh/authorized_keys"
-    log_info "Copied SSH keys to $USERNAME"
+if [ -f /root/.ssh/authorized_keys ] && [ -s /root/.ssh/authorized_keys ]; then
+    if [ ! -f "$USER_HOME/.ssh/authorized_keys" ] || [ ! -s "$USER_HOME/.ssh/authorized_keys" ]; then
+        cp /root/.ssh/authorized_keys "$USER_HOME/.ssh/authorized_keys"
+        chown "$USERNAME:$USERNAME" "$USER_HOME/.ssh/authorized_keys"
+        chmod 600 "$USER_HOME/.ssh/authorized_keys"
+        log_info "Copied SSH keys to $USERNAME"
+    else
+        log_info "User already has SSH keys"
+    fi
 else
-    log_info "User already has SSH keys"
+    log_info "No SSH keys to copy (Tailscale SSH is primary access method)"
 fi
 
 chown -R "$USERNAME:$USERNAME" "$USER_HOME/.ssh"
 chmod 700 "$USER_HOME/.ssh"
-chmod 600 "$USER_HOME/.ssh/authorized_keys"
 
 # Allow sudo without password
 # This is intentional for automation/deployment scripts. The security model is:
