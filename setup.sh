@@ -3,17 +3,19 @@
 # VPS Setup Script
 # =============================================================================
 #
-# Secures a fresh Ubuntu/Debian server with Tailscale for secure access.
+# Secures a fresh Ubuntu/Debian server for hosting web applications.
 #
 # USAGE:
-#   ./setup.sh                    # Default: Tailscale + proxy-nginx (recommended)
-#   ./setup.sh --no-tailscale     # Advanced: Skip Tailscale (you handle SSH security)
+#   ./setup.sh                    # Interactive mode (recommended)
+#   ./setup.sh --tailscale        # Non-interactive: Tailscale protection
+#   ./setup.sh --ip-whitelist IP  # Non-interactive: IP-based restriction
+#   ./setup.sh --no-restriction   # Non-interactive: No access restriction (unsafe)
 #
 # WHAT IT DOES:
 #   1. Updates system and enables automatic security patches
 #   2. Installs Docker with log rotation
 #   3. Installs proxy-nginx reverse proxy
-#   4. Installs and configures Tailscale (SSH via Tailscale only)
+#   4. Configures access restriction (Tailscale, IP whitelist, or none)
 #   5. Hardens SSH (key-only auth, no root login)
 #   6. Creates 'admin' user with sudo and docker access
 #   7. Configures iptables firewall
@@ -52,7 +54,9 @@ log_step() { echo -e "\n${BLUE}==>${NC} ${1:-}"; }
 # -----------------------------------------------------------------------------
 # Parse arguments
 # -----------------------------------------------------------------------------
-SKIP_TAILSCALE=false
+# ACCESS_MODE: "tailscale" | "ip-whitelist" | "none" | "" (interactive)
+ACCESS_MODE=""
+IP_WHITELIST=""
 TAILSCALE_KEY="${TAILSCALE_KEY:-}"
 USERNAME="admin"
 
@@ -60,22 +64,43 @@ show_help() {
     echo "Usage: $0 [options]"
     echo ""
     echo "Options:"
-    echo "  --no-tailscale    Skip Tailscale installation (advanced users only)"
-    echo "  -h, --help        Show this help message"
+    echo "  --tailscale           Use Tailscale for access restriction (recommended)"
+    echo "  --ip-whitelist IPs    Use IP-based restriction (comma-separated IPs/CIDRs)"
+    echo "  --no-restriction      No access restriction (NOT recommended)"
+    echo "  -h, --help            Show this help message"
     echo ""
     echo "Environment variables:"
-    echo "  TAILSCALE_KEY     Auth key for unattended Tailscale setup"
+    echo "  TAILSCALE_KEY         Auth key for unattended Tailscale setup"
     echo ""
     echo "Examples:"
-    echo "  $0                                    # Default setup with Tailscale"
-    echo "  TAILSCALE_KEY=tskey-xxx $0            # Unattended setup"
-    echo "  $0 --no-tailscale                     # Skip Tailscale (not recommended)"
+    echo "  $0                                      # Interactive mode"
+    echo "  $0 --tailscale                          # Tailscale protection"
+    echo "  TAILSCALE_KEY=tskey-xxx $0 --tailscale  # Unattended Tailscale setup"
+    echo "  $0 --ip-whitelist \"1.2.3.4,5.6.7.0/24\"  # IP-based restriction"
+    echo "  $0 --no-restriction                     # No restriction (unsafe)"
 }
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --tailscale)
+            ACCESS_MODE="tailscale"
+            shift
+            ;;
+        --ip-whitelist)
+            ACCESS_MODE="ip-whitelist"
+            if [[ -n "${2:-}" ]] && [[ ! "$2" =~ ^-- ]]; then
+                IP_WHITELIST="$2"
+                shift
+            fi
+            shift
+            ;;
+        --no-restriction)
+            ACCESS_MODE="none"
+            shift
+            ;;
         --no-tailscale)
-            SKIP_TAILSCALE=true
+            # Legacy flag support
+            ACCESS_MODE="none"
             shift
             ;;
         -h|--help)
@@ -102,30 +127,30 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # -----------------------------------------------------------------------------
-# Check for mode mismatch (prevent switching between Tailscale/no-Tailscale)
+# Check for mode mismatch (prevent switching access modes)
 # -----------------------------------------------------------------------------
 if [ -f "$CONFIG_FILE" ]; then
     # shellcheck source=/dev/null
     source "$CONFIG_FILE"
-    STORED_TAILSCALE="${TAILSCALE_ENABLED:-}"
+    STORED_MODE="${ACCESS_MODE_STORED:-}"
+    # Legacy support: convert old TAILSCALE_ENABLED to ACCESS_MODE
+    if [ -z "$STORED_MODE" ] && [ -n "${TAILSCALE_ENABLED:-}" ]; then
+        STORED_MODE=$([ "$TAILSCALE_ENABLED" = "true" ] && echo "tailscale" || echo "none")
+    fi
 
-    if [ "$SKIP_TAILSCALE" = false ] && [ "$STORED_TAILSCALE" = "false" ]; then
-        log_error "This server was set up WITHOUT Tailscale."
-        log_error "Cannot add Tailscale to an existing no-Tailscale setup."
+    if [ -n "$STORED_MODE" ] && [ -n "$ACCESS_MODE" ] && [ "$STORED_MODE" != "$ACCESS_MODE" ]; then
+        log_error "This server was set up with access mode: $STORED_MODE"
+        log_error "Cannot switch to: $ACCESS_MODE"
         echo ""
-        echo "If you need Tailscale, create a new server and run setup without --no-tailscale."
+        echo "To change access modes, create a new server."
         exit 1
     fi
 
-    if [ "$SKIP_TAILSCALE" = true ] && [ "$STORED_TAILSCALE" = "true" ]; then
-        log_error "This server was set up WITH Tailscale."
-        log_error "Cannot switch to --no-tailscale mode."
-        echo ""
-        echo "If you need a no-Tailscale setup, create a new server."
-        exit 1
+    # Use stored mode if not specified on command line
+    if [ -z "$ACCESS_MODE" ] && [ -n "$STORED_MODE" ]; then
+        ACCESS_MODE="$STORED_MODE"
+        log_info "Re-running setup (mode: $ACCESS_MODE)"
     fi
-
-    log_info "Re-running setup (mode unchanged)"
 fi
 
 # Detect distro
@@ -146,9 +171,88 @@ fi
 
 log_info "Detected: $DISTRO_ID $DISTRO_CODENAME"
 
+# -----------------------------------------------------------------------------
+# Interactive menu for access mode selection
+# -----------------------------------------------------------------------------
+if [ -z "$ACCESS_MODE" ]; then
+    echo ""
+    echo "============================================================================="
+    echo -e "${BLUE}PocketDev Access Restriction${NC}"
+    echo "============================================================================="
+    echo ""
+    echo "We strongly recommend restricting access to PocketDev."
+    echo ""
+    echo "Choose your access restriction method:"
+    echo ""
+    echo -e "  ${GREEN}1) Tailscale (recommended)${NC}"
+    echo "     - Zero-trust network access via Tailscale"
+    echo "     - Works great with mobile devices and dynamic IPs"
+    echo "     - SSH only accessible via Tailscale network"
+    echo "     - Requires free Tailscale account"
+    echo ""
+    echo -e "  ${YELLOW}2) IP-based whitelist${NC}"
+    echo "     - Restrict access to specific IP addresses/ranges"
+    echo "     - Simple but doesn't work well with dynamic IPs"
+    echo "     - You'll need to update the whitelist if your IP changes"
+    echo ""
+    echo -e "  ${RED}3) No restriction (NOT recommended)${NC}"
+    echo "     - PocketDev will be publicly accessible"
+    echo "     - You are fully responsible for security"
+    echo "     - Only choose this if you have your own security measures"
+    echo ""
+
+    while true; do
+        read -rp "Enter choice [1-3]: " choice
+        case $choice in
+            1)
+                ACCESS_MODE="tailscale"
+                break
+                ;;
+            2)
+                ACCESS_MODE="ip-whitelist"
+                echo ""
+                echo "Enter IP addresses or CIDR ranges to whitelist."
+                echo "Separate multiple entries with commas."
+                echo "Examples: 1.2.3.4  or  10.0.0.0/8  or  1.2.3.4,5.6.7.0/24"
+                echo ""
+                while true; do
+                    read -rp "IP whitelist: " IP_WHITELIST
+                    if [ -n "$IP_WHITELIST" ]; then
+                        break
+                    fi
+                    echo "Please enter at least one IP address or CIDR range."
+                done
+                break
+                ;;
+            3)
+                ACCESS_MODE="none"
+                echo ""
+                log_warn "WARNING: You are choosing to run PocketDev without access restrictions."
+                log_warn "This means ANYONE on the internet can access your PocketDev instance."
+                echo ""
+                echo "You accept full responsibility for:"
+                echo "  - Securing your PocketDev instance"
+                echo "  - Any unauthorized access or data breaches"
+                echo "  - Monitoring for suspicious activity"
+                echo ""
+                read -rp "Type 'I ACCEPT' to continue: " confirm
+                if [ "$confirm" != "I ACCEPT" ]; then
+                    echo "Aborting. Please choose a different option."
+                    continue
+                fi
+                break
+                ;;
+            *)
+                echo "Invalid choice. Please enter 1, 2, or 3."
+                ;;
+        esac
+    done
+    echo ""
+fi
+
 # Check for SSH key before we lock out password auth
 if [ ! -f /root/.ssh/authorized_keys ] || [ ! -s /root/.ssh/authorized_keys ]; then
-    if [ "$SKIP_TAILSCALE" = true ]; then
+    if [ "$ACCESS_MODE" != "tailscale" ]; then
         # No Tailscale = no backup access method, SSH key required
         log_error "No SSH keys found in /root/.ssh/authorized_keys"
         log_error "Add your SSH key first, or you'll be locked out!"
@@ -168,32 +272,48 @@ fi
 
 # Show what will happen
 echo ""
-if [ "$SKIP_TAILSCALE" = true ]; then
-    log_warn "NO-TAILSCALE MODE: SSH will be publicly accessible (port 22)"
-    log_warn "You are responsible for SSH security!"
-    echo ""
-    echo "This script will:"
-    echo "  1. Update system and enable automatic security updates"
-    echo "  2. Install Docker with log rotation"
-    echo "  3. Install proxy-nginx reverse proxy"
-    echo "  4. Skip Tailscale (--no-tailscale)"
-    echo "  5. Harden SSH (key-only, no root login)"
-    echo "  6. Configure 'admin' user with sudo + docker access"
-    echo "  7. Configure firewall (SSH, HTTP, HTTPS open)"
-    echo "  8. Create 2GB swap file"
-else
-    log_info "SECURE MODE: SSH will only be accessible via Tailscale"
-    echo ""
-    echo "This script will:"
-    echo "  1. Update system and enable automatic security updates"
-    echo "  2. Install Docker with log rotation"
-    echo "  3. Install proxy-nginx reverse proxy"
-    echo "  4. Install and configure Tailscale"
-    echo "  5. Harden SSH (key-only, no root login)"
-    echo "  6. Configure 'admin' user with sudo + docker access"
-    echo "  7. Configure firewall (SSH via Tailscale only, web public)"
-    echo "  8. Create 2GB swap file"
-fi
+case "$ACCESS_MODE" in
+    tailscale)
+        log_info "TAILSCALE MODE: SSH will only be accessible via Tailscale"
+        echo ""
+        echo "This script will:"
+        echo "  1. Update system and enable automatic security updates"
+        echo "  2. Install Docker with log rotation"
+        echo "  3. Install proxy-nginx reverse proxy"
+        echo "  4. Install and configure Tailscale"
+        echo "  5. Harden SSH (key-only, no root login)"
+        echo "  6. Configure 'admin' user with sudo + docker access"
+        echo "  7. Configure firewall (SSH via Tailscale only, web public)"
+        echo "  8. Create 2GB swap file"
+        ;;
+    ip-whitelist)
+        log_info "IP WHITELIST MODE: Access restricted to: $IP_WHITELIST"
+        echo ""
+        echo "This script will:"
+        echo "  1. Update system and enable automatic security updates"
+        echo "  2. Install Docker with log rotation"
+        echo "  3. Install proxy-nginx reverse proxy"
+        echo "  4. Skip Tailscale (using IP whitelist instead)"
+        echo "  5. Harden SSH (key-only, no root login)"
+        echo "  6. Configure 'admin' user with sudo + docker access"
+        echo "  7. Configure firewall (SSH from whitelisted IPs, web public)"
+        echo "  8. Create 2GB swap file"
+        ;;
+    none)
+        log_warn "NO RESTRICTION MODE: PocketDev will be publicly accessible"
+        log_warn "You are responsible for security!"
+        echo ""
+        echo "This script will:"
+        echo "  1. Update system and enable automatic security updates"
+        echo "  2. Install Docker with log rotation"
+        echo "  3. Install proxy-nginx reverse proxy"
+        echo "  4. Skip Tailscale (no access restriction)"
+        echo "  5. Harden SSH (key-only, no root login)"
+        echo "  6. Configure 'admin' user with sudo + docker access"
+        echo "  7. Configure firewall (SSH, HTTP, HTTPS open)"
+        echo "  8. Create 2GB swap file"
+        ;;
+esac
 echo ""
 
 # =============================================================================
@@ -343,11 +463,11 @@ else
 fi
 
 # =============================================================================
-# STEP 4: Install Tailscale
+# STEP 4: Install Tailscale (if selected)
 # =============================================================================
 TAILSCALE_IP=""
 
-if [ "$SKIP_TAILSCALE" = false ]; then
+if [ "$ACCESS_MODE" = "tailscale" ]; then
     log_step "Step 4/8: Installing Tailscale..."
 
     # Install if not present
@@ -389,9 +509,12 @@ if [ "$SKIP_TAILSCALE" = false ]; then
             exit 1
         fi
     fi
+elif [ "$ACCESS_MODE" = "ip-whitelist" ]; then
+    log_step "Step 4/8: Skipping Tailscale (using IP whitelist)"
+    log_info "Access will be restricted to: $IP_WHITELIST"
 else
-    log_step "Step 4/8: Skipping Tailscale (--no-tailscale)"
-    log_warn "SSH will be publicly accessible. You are responsible for security."
+    log_step "Step 4/8: Skipping Tailscale (no restriction)"
+    log_warn "PocketDev will be publicly accessible. You are responsible for security."
 fi
 
 # =============================================================================
@@ -531,7 +654,8 @@ ipt_add INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 # Allow ICMP (ping)
 ipt_add INPUT -p icmp -j ACCEPT
 
-# Always allow Tailscale interface and UDP port
+# Always allow Tailscale interface and UDP port (even if not using Tailscale mode,
+# user might add Tailscale later)
 ipt_add INPUT -i tailscale0 -j ACCEPT
 ipt_add INPUT -p udp --dport 41641 -j ACCEPT
 
@@ -539,14 +663,28 @@ ipt_add INPUT -p udp --dport 41641 -j ACCEPT
 ipt_add INPUT -p tcp --dport 80 -j ACCEPT
 ipt_add INPUT -p tcp --dport 443 -j ACCEPT
 
-if [ "$SKIP_TAILSCALE" = true ]; then
-    # No-Tailscale mode: also allow public SSH
-    log_warn "Opening SSH (port 22) to public (--no-tailscale mode)"
-    ipt_add INPUT -p tcp --dport 22 -j ACCEPT
-else
-    # Default: SSH only via Tailscale (no public SSH rule)
-    log_info "SSH accessible only via Tailscale (port 22 blocked from public)"
-fi
+case "$ACCESS_MODE" in
+    tailscale)
+        # SSH only via Tailscale (no public SSH rule)
+        log_info "SSH accessible only via Tailscale (port 22 blocked from public)"
+        ;;
+    ip-whitelist)
+        # SSH from whitelisted IPs only
+        log_info "SSH accessible from whitelisted IPs: $IP_WHITELIST"
+        IFS=',' read -ra IPS <<< "$IP_WHITELIST"
+        for ip in "${IPS[@]}"; do
+            ip=$(echo "$ip" | xargs)  # trim whitespace
+            if [ -n "$ip" ]; then
+                ipt_add INPUT -p tcp --dport 22 -s "$ip" -j ACCEPT
+            fi
+        done
+        ;;
+    none)
+        # No restriction: allow public SSH
+        log_warn "Opening SSH (port 22) to public (no restriction mode)"
+        ipt_add INPUT -p tcp --dport 22 -j ACCEPT
+        ;;
+esac
 
 # Now set INPUT policy to DROP (after rules are in place)
 iptables -P INPUT DROP
@@ -599,10 +737,26 @@ ipt6_add INPUT -i tailscale0 -j ACCEPT
 ipt6_add INPUT -p tcp --dport 80 -j ACCEPT
 ipt6_add INPUT -p tcp --dport 443 -j ACCEPT
 
-if [ "$SKIP_TAILSCALE" = true ]; then
-    # No-Tailscale mode: also allow public SSH over IPv6
-    ipt6_add INPUT -p tcp --dport 22 -j ACCEPT
-fi
+case "$ACCESS_MODE" in
+    tailscale)
+        # SSH only via Tailscale (IPv6 SSH blocked)
+        ;;
+    ip-whitelist)
+        # SSH from whitelisted IPs (IPv6)
+        IFS=',' read -ra IPS <<< "$IP_WHITELIST"
+        for ip in "${IPS[@]}"; do
+            ip=$(echo "$ip" | xargs)
+            # Only add IPv6 rules for IPv6 addresses
+            if [[ "$ip" == *:* ]]; then
+                ipt6_add INPUT -p tcp --dport 22 -s "$ip" -j ACCEPT
+            fi
+        done
+        ;;
+    none)
+        # No restriction: allow public SSH over IPv6
+        ipt6_add INPUT -p tcp --dport 22 -j ACCEPT
+        ;;
+esac
 
 # Now set INPUT policy to DROP (after rules are in place)
 ip6tables -P INPUT DROP
@@ -623,11 +777,17 @@ ipt6_add DOCKER-USER -j DROP
 iptables-save > /etc/iptables/rules.v4
 ip6tables-save > /etc/iptables/rules.v6
 
-if [ "$SKIP_TAILSCALE" = true ]; then
-    log_info "Firewall configured: SSH (22), HTTP (80), HTTPS (443)"
-else
-    log_info "Firewall configured: HTTP (80), HTTPS (443) + Tailscale (SSH via Tailscale only)"
-fi
+case "$ACCESS_MODE" in
+    tailscale)
+        log_info "Firewall configured: HTTP (80), HTTPS (443) + Tailscale (SSH via Tailscale only)"
+        ;;
+    ip-whitelist)
+        log_info "Firewall configured: HTTP (80), HTTPS (443) + SSH from whitelist only"
+        ;;
+    none)
+        log_info "Firewall configured: SSH (22), HTTP (80), HTTPS (443)"
+        ;;
+esac
 
 # =============================================================================
 # STEP 8: Create Swap File
@@ -665,7 +825,8 @@ cat > "$CONFIG_FILE" << EOF
 # Generated: $(date -Iseconds)
 # Do not edit manually - this file is used to detect setup mode
 
-TAILSCALE_ENABLED=$([ "$SKIP_TAILSCALE" = false ] && echo "true" || echo "false")
+ACCESS_MODE_STORED="$ACCESS_MODE"
+IP_WHITELIST_STORED="$IP_WHITELIST"
 INSTALLED_AT="$(date -Iseconds)"
 EOF
 
@@ -687,43 +848,63 @@ echo "Installed:"
 echo "  ✓ Automatic security updates"
 echo "  ✓ Docker with log rotation (50MB × 5 files per container)"
 echo "  ✓ proxy-nginx reverse proxy (ports 80, 443)"
-if [ "$SKIP_TAILSCALE" = false ]; then
-    echo "  ✓ Tailscale (SSH via Tailscale only)"
-else
-    echo "  ✗ Tailscale (skipped - SSH publicly accessible)"
-fi
+case "$ACCESS_MODE" in
+    tailscale)
+        echo "  ✓ Tailscale (SSH via Tailscale only)"
+        ;;
+    ip-whitelist)
+        echo "  ✓ IP whitelist ($IP_WHITELIST)"
+        ;;
+    none)
+        echo "  ✗ No access restriction (publicly accessible)"
+        ;;
+esac
 echo "  ✓ SSH: key-only, no root login"
 echo "  ✓ User 'admin' with sudo + docker"
 echo "  ✓ Firewall configured"
 echo "  ✓ 2GB swap file"
 echo ""
-if [ "$SKIP_TAILSCALE" = false ]; then
-    echo "Connect via Tailscale:"
-    echo "  ssh $USERNAME@$TAILSCALE_IP"
-    echo ""
-    log_info "SSH is only accessible via Tailscale. Public SSH is blocked."
-else
-    echo "Connect via:"
-    echo "  ssh $USERNAME@<public-ip>"
-    echo ""
-    log_warn "SSH is publicly accessible (port 22). Consider using Tailscale."
-fi
+
+case "$ACCESS_MODE" in
+    tailscale)
+        echo "Connect via Tailscale:"
+        echo "  ssh $USERNAME@$TAILSCALE_IP"
+        echo ""
+        log_info "SSH is only accessible via Tailscale. Public SSH is blocked."
+        ;;
+    ip-whitelist)
+        echo "Connect via SSH (from whitelisted IP):"
+        echo "  ssh $USERNAME@<public-ip>"
+        echo ""
+        log_info "SSH is only accessible from: $IP_WHITELIST"
+        ;;
+    none)
+        echo "Connect via:"
+        echo "  ssh $USERNAME@<public-ip>"
+        echo ""
+        log_warn "PocketDev is publicly accessible. You are responsible for security!"
+        ;;
+esac
+
 echo ""
 echo "Add web apps:"
-echo "  1. Edit: nano /opt/proxy-nginx/default.conf"
-echo "  2. Reload: docker exec proxy-nginx nginx -s reload"
-echo "  3. SSL: docker exec -it proxy-nginx certbot --nginx -d your-domain.com"
+echo "  docker exec proxy-nginx /scripts/domain.sh upsert --domain=app.example.com --upstream=app-nginx"
+echo "  docker exec -it proxy-nginx certbot --nginx -d app.example.com"
 echo ""
 echo "============================================================================="
 echo ""
 log_warn "IMPORTANT: Root login is now disabled."
 log_warn "Test the new user login BEFORE closing this session!"
 echo ""
-if [ "$SKIP_TAILSCALE" = false ]; then
-    echo "In a NEW terminal, run:"
-    echo "  ssh $USERNAME@$TAILSCALE_IP"
-else
-    echo "In a NEW terminal, run:"
-    echo "  ssh $USERNAME@<public-ip>"
-fi
+
+case "$ACCESS_MODE" in
+    tailscale)
+        echo "In a NEW terminal, run:"
+        echo "  ssh $USERNAME@$TAILSCALE_IP"
+        ;;
+    *)
+        echo "In a NEW terminal, run:"
+        echo "  ssh $USERNAME@<public-ip>"
+        ;;
+esac
 echo ""

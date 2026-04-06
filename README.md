@@ -1,6 +1,6 @@
 # VPS Setup
 
-Secures a fresh Ubuntu/Debian server with Tailscale for secure access.
+Secures a fresh Ubuntu/Debian server for hosting web applications like PocketDev.
 
 **Time required**: ~5 minutes
 
@@ -12,7 +12,10 @@ Secures a fresh Ubuntu/Debian server with Tailscale for secure access.
 curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash
 ```
 
-Follow the Tailscale authentication prompt. Once connected, SSH is only accessible via Tailscale.
+You'll be prompted to choose an access restriction method:
+1. **Tailscale (recommended)** - Zero-trust network access
+2. **IP whitelist** - Restrict to specific IP addresses
+3. **No restriction** - Public access (not recommended)
 
 ---
 
@@ -23,27 +26,56 @@ Follow the Tailscale authentication prompt. Once connected, SSH is only accessib
 | 1 | Updates system, enables automatic security patches |
 | 2 | Installs Docker with log rotation (50MB x 5 files per container) |
 | 3 | Installs proxy-nginx reverse proxy (ports 80, 443) |
-| 4 | Installs and configures Tailscale |
+| 4 | Configures access restriction (Tailscale, IP whitelist, or none) |
 | 5 | Hardens SSH (key-only auth, disables root login) |
 | 6 | Creates `admin` user with sudo + docker access |
-| 7 | Configures iptables firewall (SSH via Tailscale only) |
+| 7 | Configures iptables firewall |
 | 8 | Creates 2GB swap file |
 
 ---
 
-## Architecture
+## Access Restriction Methods
 
-```
-Default Setup (Tailscale)              No-Tailscale Setup
-========================               ==================
-SSH: Tailscale only (port 22 blocked)  SSH: Public (port 22 open)
-Web: Public (80/443 open)              Web: Public (80/443 open)
-Tailscale: Required                    Tailscale: Not installed
+| Method | SSH Access | Best For |
+|--------|------------|----------|
+| **Tailscale** | Via Tailscale only | Mobile/dynamic IPs, zero-trust |
+| **IP Whitelist** | From specified IPs only | Static IPs, office networks |
+| **No Restriction** | Public (port 22 open) | You handle security yourself |
 
-Security: High                         Security: User's responsibility
-```
+### Tailscale (Recommended)
 
-> **Note:** When using `--no-tailscale`, SSH is publicly accessible. While key-only authentication provides strong protection, consider adding brute-force protection like [fail2ban](https://github.com/fail2ban/fail2ban) for additional security.
+Zero-trust network access. SSH and PocketDev only accessible via your Tailscale network.
+
+**Pros:**
+- Works with dynamic IPs (mobile, home internet)
+- SSH completely hidden from public internet
+- Easy to add/remove access for team members
+
+**Cons:**
+- Requires Tailscale account (free tier available)
+
+### IP Whitelist
+
+Restrict access to specific IP addresses or CIDR ranges.
+
+**Pros:**
+- No additional service required
+- Simple and predictable
+
+**Cons:**
+- Doesn't work well with dynamic IPs
+- Need to update whitelist when IPs change
+
+### No Restriction
+
+PocketDev publicly accessible. **Not recommended.**
+
+**Pros:**
+- Works from anywhere without setup
+
+**Cons:**
+- Security is entirely your responsibility
+- Exposed to the internet
 
 ---
 
@@ -51,32 +83,38 @@ Security: High                         Security: User's responsibility
 
 | Flag | Description |
 |------|-------------|
-| `--no-tailscale` | Skip Tailscale, expose SSH publicly (advanced users) |
+| `--tailscale` | Use Tailscale (non-interactive) |
+| `--ip-whitelist IPs` | Use IP whitelist (comma-separated IPs/CIDRs) |
+| `--no-restriction` | No access restriction (not recommended) |
 | `-h, --help` | Show help |
 
 ### Examples
 
 ```bash
-# Default: Tailscale + proxy-nginx (recommended)
+# Interactive mode (prompts for choice)
 curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash
 
-# With auth key (for automation)
+# Tailscale with auth key (for automation)
 export TAILSCALE_KEY=tskey-xxx
-curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash -s -- --tailscale
 
-# Advanced: No Tailscale (user handles security themselves)
-curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash -s -- --no-tailscale
+# IP whitelist (non-interactive)
+curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash -s -- --ip-whitelist "1.2.3.4,10.0.0.0/8"
+
+# No restriction (not recommended)
+curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash -s -- --no-restriction
 ```
 
 ---
 
 ## Automation
 
-For automated setups (e.g., PocketDev deploying to new servers):
+For automated setups:
 
 ```bash
+# Tailscale with auth key
 export TAILSCALE_KEY=tskey-auth-xxx
-curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash -s -- --tailscale
 ```
 
 Generate an auth key at [Tailscale Admin Console](https://login.tailscale.com/admin/settings/keys).
