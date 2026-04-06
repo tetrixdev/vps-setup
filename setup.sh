@@ -509,6 +509,60 @@ if [ "$ACCESS_MODE" = "tailscale" ]; then
             exit 1
         fi
     fi
+
+    # -------------------------------------------------------------------------
+    # CoreDNS Setup (for Tailscale split DNS)
+    # -------------------------------------------------------------------------
+    # Apps using Tailscale restriction need split DNS so their domains resolve
+    # to the Tailscale IP (not public IP) when accessed via Tailscale.
+    log_info "Setting up CoreDNS for split DNS..."
+
+    if [ -z "$TAILSCALE_IP" ]; then
+        log_warn "Tailscale IP not available. Skipping CoreDNS setup."
+    else
+        # Create zone file directory for apps to register their domains
+        mkdir -p /etc/coredns/zones.d
+
+        # Create main Corefile that imports zone files
+        cat > /etc/coredns/Corefile << 'COREFILE'
+# CoreDNS configuration for Tailscale split DNS
+# Zone files are loaded from /etc/coredns/zones.d/
+# Apps can drop their zone files there and reload CoreDNS with:
+#   docker kill -s SIGHUP coredns
+
+import /etc/coredns/zones.d/*.conf
+
+# Forward all other queries to public DNS
+. {
+    forward . 1.1.1.1 8.8.8.8
+    log
+    errors
+}
+COREFILE
+
+        # Create helper script for apps to reload CoreDNS
+        cat > /usr/local/bin/coredns-reload << 'RELOADSCRIPT'
+#!/bin/bash
+# Reload CoreDNS configuration after zone file changes
+docker kill -s SIGHUP coredns 2>/dev/null || echo "CoreDNS not running"
+RELOADSCRIPT
+        chmod +x /usr/local/bin/coredns-reload
+
+        # Stop existing CoreDNS if running (e.g., from previous install)
+        docker rm -f coredns 2>/dev/null || true
+
+        # Run CoreDNS container bound to Tailscale IP only
+        if docker run -d --name coredns --restart=unless-stopped \
+            -p "$TAILSCALE_IP:53:53/udp" \
+            -p "$TAILSCALE_IP:53:53/tcp" \
+            -v /etc/coredns:/etc/coredns:ro \
+            coredns/coredns -conf /etc/coredns/Corefile; then
+            log_info "CoreDNS started on $TAILSCALE_IP:53"
+            log_info "Apps can register domains in /etc/coredns/zones.d/"
+        else
+            log_warn "Failed to start CoreDNS. Split DNS will need manual setup."
+        fi
+    fi
 elif [ "$ACCESS_MODE" = "ip-whitelist" ]; then
     log_step "Step 4/8: Skipping Tailscale (using IP whitelist)"
     log_info "Access will be restricted to: $IP_WHITELIST"
@@ -851,6 +905,7 @@ echo "  ✓ proxy-nginx reverse proxy (ports 80, 443)"
 case "$ACCESS_MODE" in
     tailscale)
         echo "  ✓ Tailscale (SSH via Tailscale only)"
+        echo "  ✓ CoreDNS for split DNS ($TAILSCALE_IP:53)"
         ;;
     ip-whitelist)
         echo "  ✓ IP whitelist ($IP_WHITELIST)"
@@ -891,6 +946,24 @@ echo "Add web apps:"
 echo "  docker exec proxy-nginx /scripts/domain.sh upsert --domain=app.example.com --upstream=app-nginx"
 echo "  docker exec -it proxy-nginx certbot --nginx -d app.example.com"
 echo ""
+
+# CoreDNS info for Tailscale mode
+if [ "$ACCESS_MODE" = "tailscale" ]; then
+    echo "============================================================================="
+    echo -e "${GREEN}CoreDNS Ready for Split DNS${NC}"
+    echo "============================================================================="
+    echo ""
+    echo "CoreDNS is running on $TAILSCALE_IP:53"
+    echo "Apps using Tailscale restriction will register their domains automatically."
+    echo ""
+    echo "When you install apps (e.g., PocketDev) with Tailscale restriction:"
+    echo "  1. The app will register its domain in CoreDNS"
+    echo "  2. You'll see instructions to configure Tailscale admin"
+    echo ""
+    echo "Zone files: /etc/coredns/zones.d/"
+    echo ""
+fi
+
 echo "============================================================================="
 echo ""
 log_warn "IMPORTANT: Root login is now disabled."
