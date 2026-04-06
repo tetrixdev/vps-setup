@@ -202,7 +202,7 @@ if [ -z "$ACCESS_MODE" ]; then
     echo ""
 
     while true; do
-        read -rp "Enter choice [1-3]: " choice
+        read -rp "Enter choice [1-3]: " choice < /dev/tty
         case $choice in
             1)
                 ACCESS_MODE="tailscale"
@@ -216,7 +216,7 @@ if [ -z "$ACCESS_MODE" ]; then
                 echo "Examples: 1.2.3.4  or  10.0.0.0/8  or  1.2.3.4,5.6.7.0/24"
                 echo ""
                 while true; do
-                    read -rp "IP whitelist: " IP_WHITELIST
+                    read -rp "IP whitelist: " IP_WHITELIST < /dev/tty
                     if [ -n "$IP_WHITELIST" ]; then
                         break
                     fi
@@ -235,7 +235,7 @@ if [ -z "$ACCESS_MODE" ]; then
                 echo "  - Any unauthorized access or data breaches"
                 echo "  - Monitoring for suspicious activity"
                 echo ""
-                read -rp "Type 'I ACCEPT' to continue: " confirm
+                read -rp "Type 'I ACCEPT' to continue: " confirm < /dev/tty
                 if [ "$confirm" != "I ACCEPT" ]; then
                     echo "Aborting. Please choose a different option."
                     continue
