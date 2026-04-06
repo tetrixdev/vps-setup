@@ -528,7 +528,7 @@ if [ "$ACCESS_MODE" = "tailscale" ]; then
 # CoreDNS configuration for Tailscale split DNS
 # Zone files are loaded from /etc/coredns/zones.d/
 # Apps can drop their zone files there and reload CoreDNS with:
-#   docker kill -s SIGHUP coredns
+#   coredns-reload   (or: docker restart coredns)
 
 import /etc/coredns/zones.d/*.conf
 
