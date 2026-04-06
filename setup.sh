@@ -486,14 +486,14 @@ if [ "$ACCESS_MODE" = "tailscale" ]; then
         # Need to authenticate
         if [ -n "$TAILSCALE_KEY" ]; then
             log_info "Authenticating with provided auth key..."
-            if ! tailscale up --auth-key="$TAILSCALE_KEY" --ssh; then
+            if ! tailscale up --auth-key="$TAILSCALE_KEY" --ssh --snat-subnet-routes=false; then
                 log_error "Tailscale authentication failed with provided key"
                 log_error "Check that your TAILSCALE_KEY is valid and not expired"
                 exit 1
             fi
         else
             log_info "Please authenticate Tailscale (follow the URL):"
-            tailscale up --ssh
+            tailscale up --ssh --snat-subnet-routes=false
         fi
 
         # Wait a moment for connection
@@ -505,7 +505,7 @@ if [ "$ACCESS_MODE" = "tailscale" ]; then
             log_info "Tailscale connected: $TAILSCALE_IP"
         else
             log_error "Tailscale authentication failed"
-            log_error "Run 'tailscale up --ssh' manually to authenticate"
+            log_error "Run 'tailscale up --ssh --snat-subnet-routes=false' manually to authenticate"
             exit 1
         fi
     fi
@@ -541,10 +541,12 @@ import /etc/coredns/zones.d/*.conf
 COREFILE
 
         # Create helper script for apps to reload CoreDNS
+        # Note: Full restart required because SIGHUP doesn't re-scan import globs
         cat > /usr/local/bin/coredns-reload << 'RELOADSCRIPT'
 #!/bin/bash
-# Reload CoreDNS configuration after zone file changes
-docker kill -s SIGHUP coredns 2>/dev/null || echo "CoreDNS not running"
+# Restart CoreDNS to pick up new zone files
+# SIGHUP doesn't re-scan import globs, so full restart is required
+docker restart coredns 2>/dev/null || echo "CoreDNS not running"
 RELOADSCRIPT
         chmod +x /usr/local/bin/coredns-reload
 
