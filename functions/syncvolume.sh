@@ -65,11 +65,6 @@ syncvolume() {
         rsync_opts="$rsync_opts --delete"
     fi
 
-    local ssh_cmd="ssh"
-    if [ -n "$remote_pass" ] && command -v sshpass &>/dev/null; then
-        ssh_cmd="sshpass -p '$remote_pass' ssh"
-    fi
-
     echo -e "${BLUE}Syncing...${NC}"
     echo "  From: ${remote_user}@${remote_host}:${remote_path}"
     echo "  To:   ${local_path}"

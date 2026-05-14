@@ -881,7 +881,7 @@ fi
 log_step "Step 9/9: Installing VPS operations toolkit..."
 
 # Install sshpass (used by syncvolume for remote rsync)
-if ! apt-get install -y -qq sshpass 2>/dev/null; then
+if ! apt-get install -y -qq sshpass; then
     log_warn "sshpass installation failed. syncvolume will require manual password entry."
 fi
 

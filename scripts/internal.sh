@@ -97,6 +97,7 @@ vps_update() {
         sudo bash -c "source '$VPS_SETUP_DIR/scripts/internal.sh' && vps_update"
         local update_rc=$?
         # Re-source bootstrap to pick up any new functions
+        unset _VPS_BOOTSTRAP_LOADED
         source "$VPS_SETUP_DIR/scripts/bootstrap.sh"
         return $update_rc
     fi
