@@ -10,13 +10,13 @@ up() {
     echo -e "${BLUE}Starting${NC} $prefix..."
 
     if [[ "$prefix" == "proxy-nginx" ]]; then
-        docker compose -f "$compose_dir/compose.yml" up -d
+        docker compose -f "$compose_dir/compose.yml" up -d || return 1
     elif [[ -f "$compose_dir/up.sh" ]]; then
         # Delegate to project-level up.sh if it exists (e.g., slim-docker-laravel deploy script)
-        bash "$compose_dir/up.sh"
+        (cd "$compose_dir" && bash "./up.sh") || return 1
     else
         docker compose -f "$compose_dir/compose.yml" pull 2>/dev/null || true
-        docker compose -f "$compose_dir/compose.yml" up -d
+        docker compose -f "$compose_dir/compose.yml" up -d || return 1
     fi
 
     echo -e "${GREEN}Started${NC} $prefix"

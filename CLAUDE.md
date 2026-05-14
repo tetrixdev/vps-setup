@@ -4,7 +4,7 @@ Server provisioning and operations toolkit for Ubuntu/Debian servers running Doc
 
 ## Repository Structure
 
-```
+```text
 vps-setup/
 ├── setup.sh                 # Initial server provisioning (run once via curl)
 ├── scripts/

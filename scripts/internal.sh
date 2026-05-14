@@ -61,12 +61,17 @@ vps_check() {
         return 1
     fi
 
-    # Fetch latest (suppress output)
-    sudo git -C "$VPS_SETUP_DIR" fetch origin main --quiet 2>/dev/null
+    # Fetch latest (suppress output, non-interactive sudo to avoid blocking login)
+    if [ "$(id -u)" -eq 0 ]; then
+        git -C "$VPS_SETUP_DIR" fetch origin main --quiet 2>/dev/null || return 0
+    else
+        sudo -n git -C "$VPS_SETUP_DIR" fetch origin main --quiet 2>/dev/null || return 0
+    fi
 
     local local_hash remote_hash
     local_hash=$(git -C "$VPS_SETUP_DIR" rev-parse HEAD 2>/dev/null)
-    remote_hash=$(git -C "$VPS_SETUP_DIR" rev-parse origin/main 2>/dev/null)
+    remote_hash=$(git -C "$VPS_SETUP_DIR" rev-parse --verify origin/main 2>/dev/null)
+    [ -n "$remote_hash" ] || return 0
 
     if [ "$local_hash" != "$remote_hash" ]; then
         local behind
@@ -90,9 +95,10 @@ vps_update() {
     if [ "$(id -u)" -ne 0 ]; then
         echo -e "${BLUE}Updating VPS setup (requires sudo)...${NC}"
         sudo bash -c "source '$VPS_SETUP_DIR/scripts/internal.sh' && vps_update"
+        local update_rc=$?
         # Re-source bootstrap to pick up any new functions
         source "$VPS_SETUP_DIR/scripts/bootstrap.sh"
-        return $?
+        return $update_rc
     fi
 
     echo -e "${BLUE}Pulling latest VPS setup...${NC}"

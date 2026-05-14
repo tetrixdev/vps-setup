@@ -68,7 +68,7 @@ All commands auto-detect the project by walking up the directory tree to find `c
 
 Server configuration can be evolved incrementally via migrations:
 
-```
+```text
 migrations/
 ├── 20260514_001_sysctl_tuning.sh
 ├── 20260514_002_expand_swap_4gb.sh

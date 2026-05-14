@@ -881,21 +881,26 @@ fi
 log_step "Step 9/9: Installing VPS operations toolkit..."
 
 # Install sshpass (used by syncvolume for remote rsync)
-apt-get install -y -qq sshpass 2>/dev/null || true
+if ! apt-get install -y -qq sshpass 2>/dev/null; then
+    log_warn "sshpass installation failed. syncvolume will require manual password entry."
+fi
 
 VPS_SETUP_DIR="/opt/vps-setup"
 
 if [ -d "$VPS_SETUP_DIR/.git" ]; then
     log_info "VPS setup repo already present, updating..."
-    git -C "$VPS_SETUP_DIR" pull --ff-only origin main 2>/dev/null || true
+    if ! git -C "$VPS_SETUP_DIR" pull --ff-only origin main; then
+        log_error "Failed to update $VPS_SETUP_DIR. Resolve the repo state and rerun setup."
+        exit 1
+    fi
 else
     log_info "Cloning VPS setup repo..."
     git clone https://github.com/tetrixdev/vps-setup.git "$VPS_SETUP_DIR"
 fi
 
 # Create docker-apps directory (convention for hosting multiple projects)
-mkdir -p /home/"$USERNAME"/docker-apps
-chown "$USERNAME:$USERNAME" /home/"$USERNAME"/docker-apps
+mkdir -p "$USER_HOME/docker-apps"
+chown "$USERNAME:$USERNAME" "$USER_HOME/docker-apps"
 
 # Add bashrc sourcing for admin user
 BASHRC_LINE="source $VPS_SETUP_DIR/scripts/bootstrap.sh"

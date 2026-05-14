@@ -13,7 +13,10 @@
 
 migration_up() {
     # Install reboot-required tracking
-    apt-get install -y -qq update-notifier-common 2>/dev/null || true
+    if ! apt-get install -y -qq update-notifier-common; then
+        echo "Failed to install update-notifier-common" >&2
+        return 1
+    fi
 
     # Write our override config (52-* sorts AFTER Ubuntu's default 50-*)
     cat > /etc/apt/apt.conf.d/52unattended-upgrades-vps-setup << 'EOF'
@@ -64,8 +67,14 @@ AUTOEOF
     fi
 
     # Ensure all timers are enabled
-    systemctl enable apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service 2>/dev/null || true
-    systemctl start apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+    if ! systemctl enable apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; then
+        echo "Failed to enable unattended-upgrades timers/services" >&2
+        return 1
+    fi
+    if ! systemctl start apt-daily.timer apt-daily-upgrade.timer; then
+        echo "Failed to start apt timers" >&2
+        return 1
+    fi
 
     echo "Unattended-upgrades refined: 52-* override, auto-reboot at 04:00, ESM security origins"
 }

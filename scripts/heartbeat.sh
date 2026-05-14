@@ -110,14 +110,21 @@ if [ -d "$DOCKER_APPS_DIR" ]; then
 
             # Get container statuses
             containers_json="[]"
-            if [ -f "$app_dir/compose.yml" ] || [ -f "$app_dir/docker-compose.yml" ]; then
-                containers_json=$(docker compose -f "${app_dir}compose.yml" ps --format json 2>/dev/null | jq -s '.' 2>/dev/null || echo "[]")
+            compose_file=""
+            if [ -f "${app_dir}compose.yml" ]; then
+                compose_file="${app_dir}compose.yml"
+            elif [ -f "${app_dir}docker-compose.yml" ]; then
+                compose_file="${app_dir}docker-compose.yml"
+            fi
+            if [ -n "$compose_file" ]; then
+                containers_json=$(docker compose -f "$compose_file" ps --format json 2>/dev/null | jq -s '.' 2>/dev/null || echo "[]")
             fi
 
             # Get version from .env or compose image tag
             app_version="unknown"
             if [ -f "$app_dir/.env" ]; then
-                app_version=$(grep -E '^IMAGE_TAG=' "$app_dir/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "unknown")
+                extracted=$(grep -E '^IMAGE_TAG=' "$app_dir/.env" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"' || true)
+                [ -n "$extracted" ] && app_version="$extracted"
             fi
 
             if ! $first; then echo ","; fi

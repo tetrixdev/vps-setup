@@ -45,5 +45,5 @@ fi
 # Check for updates (background, non-blocking)
 # Only runs if this is an interactive login shell
 if [[ $- == *i* ]]; then
-    vps_check --quiet
+    ( vps_check --quiet ) &
 fi

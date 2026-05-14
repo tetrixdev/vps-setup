@@ -79,12 +79,12 @@ syncvolume() {
     local rsync_exit_code
     if [ -n "$remote_pass" ] && command -v sshpass &>/dev/null; then
         sudo sshpass -p "$remote_pass" rsync $rsync_opts \
-            -e "ssh -o StrictHostKeyChecking=no" \
+            -e "ssh -o StrictHostKeyChecking=accept-new" \
             "${remote_user}@${remote_host}:${remote_path}" "$local_path"
         rsync_exit_code=$?
     else
         sudo rsync $rsync_opts \
-            -e "ssh -o StrictHostKeyChecking=no" \
+            -e "ssh -o StrictHostKeyChecking=accept-new" \
             "${remote_user}@${remote_host}:${remote_path}" "$local_path"
         rsync_exit_code=$?
     fi

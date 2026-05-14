@@ -20,7 +20,10 @@ vm.dirty_background_ratio = 5
 vm.swappiness = 10
 EOF
 
-    sysctl -p "$SYSCTL_FILE" > /dev/null
+    if ! sysctl -p "$SYSCTL_FILE" > /dev/null; then
+        echo "Failed to apply sysctl settings from $SYSCTL_FILE" >&2
+        return 1
+    fi
 
     # Clean up old swappiness entry from /etc/sysctl.conf (written by setup.sh v1)
     if grep -q '^vm\.swappiness=10$' /etc/sysctl.conf 2>/dev/null; then

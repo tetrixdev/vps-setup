@@ -16,7 +16,10 @@ migration_up() {
         current_size=$(stat -c%s /swapfile 2>/dev/null || echo "0")
 
         if [ "$current_size" -ge "$SWAP_SIZE_BYTES" ]; then
-            echo "Swap already >= 4GB ($(numfmt --to=iec "$current_size")), skipping"
+            echo "Swap already >= 4GB ($(numfmt --to=iec "$current_size"))"
+            # Ensure swap is active and persistent even if file already exists
+            swapon --show | grep -q '^/swapfile' || swapon /swapfile
+            grep -qxF '/swapfile none swap sw 0 0' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
             return 0
         fi
 
