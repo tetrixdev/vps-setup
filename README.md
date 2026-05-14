@@ -1,6 +1,6 @@
 # VPS Setup
 
-Secures a fresh Ubuntu/Debian server for hosting web applications like PocketDev.
+Secures a fresh Ubuntu/Debian server for hosting web applications, and installs an operations toolkit for ongoing server management.
 
 **Time required**: ~5 minutes
 
@@ -30,7 +30,57 @@ You'll be prompted to choose an access restriction method:
 | 5 | Hardens SSH (key-only auth, disables root login) |
 | 6 | Creates `admin` user with sudo + docker access |
 | 7 | Configures iptables firewall |
-| 8 | Creates 2GB swap file |
+| 8 | Creates 4GB swap file |
+| 9 | Installs VPS operations toolkit (update system, CLI helpers, migrations) |
+
+---
+
+## Operations Toolkit
+
+After setup, the following commands are available on login:
+
+### Server Management
+
+| Command | Description |
+|---------|-------------|
+| `vps_update` | Pull latest updates and run new migrations |
+| `vps_check` | Check if an update is available |
+
+Updates are checked automatically on every SSH login.
+
+### Container Helpers
+
+Navigate to a project directory (e.g., `cd ~/docker-apps/myapp`) and use:
+
+| Command | Description |
+|---------|-------------|
+| `bashphp` | Open shell in PHP container (as www-data) |
+| `bashpostgres` | Open shell in PostgreSQL container |
+| `bashnginx` | Open shell in nginx container |
+| `bashredis` | Open shell in Redis container |
+| `up` | Start the Docker Compose project |
+| `down` | Graceful shutdown (Laravel-aware: maintenance mode, waits for jobs) |
+| `syncvolume` | Interactive rsync of Docker volumes between servers |
+
+All commands auto-detect the project by walking up the directory tree to find `compose.yml`.
+
+### Migration System
+
+Server configuration can be evolved incrementally via migrations:
+
+```
+migrations/
+├── 20260514_001_sysctl_tuning.sh
+├── 20260514_002_expand_swap_4gb.sh
+├── 20260514_003_refine_unattended_upgrades.sh
+└── 20260514_004_prepare_heartbeat.sh
+```
+
+Migrations run automatically during `vps_update`. Each migration runs exactly once and is tracked in `/etc/vps-setup-migrations`. Failed migrations are retried on the next update.
+
+### Heartbeat Monitoring
+
+A heartbeat script runs every 15 minutes via cron, collecting server state (container statuses, OS info, update availability). By default it's inactive — configure `/etc/vps-setup-heartbeat.conf` with an endpoint URL to enable.
 
 ---
 
@@ -70,13 +120,6 @@ Restrict access to specific IP addresses or CIDR ranges.
 
 PocketDev publicly accessible. **Not recommended.**
 
-**Pros:**
-- Works from anywhere without setup
-
-**Cons:**
-- Security is entirely your responsibility
-- Exposed to the internet
-
 ---
 
 ## Options
@@ -107,80 +150,45 @@ curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh |
 
 ---
 
-## Automation
-
-For automated setups:
-
-```bash
-# Tailscale with auth key
-export TAILSCALE_KEY=tskey-auth-xxx
-curl -fsSL https://raw.githubusercontent.com/tetrixdev/vps-setup/main/setup.sh | bash -s -- --tailscale
-```
-
-Generate an auth key at [Tailscale Admin Console](https://login.tailscale.com/admin/settings/keys).
-
----
-
 ## After Setup
 
-### Connect via Tailscale
+### Connect
 
 ```bash
+# Via Tailscale
 ssh admin@<tailscale-ip>
+
+# Via public IP (IP whitelist or no restriction mode)
+ssh admin@<public-ip>
 ```
 
-Find your Tailscale IP:
+### Update Server
+
 ```bash
-tailscale ip -4
+vps_update
 ```
+
+This pulls the latest vps-setup code and runs any new migrations.
 
 ### Add Web Apps
 
-proxy-nginx is pre-installed and ready for your web applications.
+Use the docker-apps directory convention:
 
 ```bash
-# Edit proxy-nginx config
-nano /opt/proxy-nginx/default.conf
+cd ~/docker-apps
+mkdir myapp && cd myapp
+# Add compose.yml, .env, etc.
 
-# Reload nginx after changes
-docker exec proxy-nginx nginx -s reload
-
-# Request SSL certificate
-docker exec -it proxy-nginx certbot --nginx -d your-domain.com
+up        # Start the project
+down      # Graceful shutdown
+bashphp   # Shell into PHP container
 ```
 
-### Example Nginx Config
+proxy-nginx is pre-installed. Add domains with:
 
-Add this to `/opt/proxy-nginx/default.conf`:
-
-```nginx
-server {
-    server_name www.example.com;
-
-    client_max_body_size 256M;
-    ssl_buffer_size 1400;  # SSE streaming optimization
-
-    location / {
-        set $upstream http://your-app-nginx;
-        resolver 127.0.0.11 valid=30s;
-
-        proxy_pass $upstream;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-
-        # WebSocket/SSE support
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-
-        proxy_read_timeout 600s;
-        proxy_send_timeout 600s;
-    }
-
-    listen 80;
-}
+```bash
+docker exec proxy-nginx /scripts/domain.sh upsert --domain=app.example.com --upstream=myapp-nginx
+docker exec -it proxy-nginx certbot --nginx -d app.example.com
 ```
 
 ---
@@ -189,11 +197,10 @@ server {
 
 The script is safe to re-run:
 
-- **First run**: Tailscale mode is determined by flags
+- **First run**: Access mode is determined by flags
 - **Subsequent runs**: Uses stored mode from `/etc/vps-setup.conf`
-- **Mode switching is blocked**: Cannot change between Tailscale/no-Tailscale
-
-If you need to switch modes, create a new server.
+- **Mode switching is blocked**: Cannot change between access modes
+- **Migrations**: Track what has run, skip already-completed migrations
 
 ---
 
@@ -215,11 +222,6 @@ Config stored at `/etc/ssh/sshd_config.d/00-vps-hardening.conf`.
 - HTTPS (port 443): Public
 - Tailscale interface: Allowed
 
-**With `--no-tailscale`:**
-- SSH (port 22): Public
-- HTTP (port 80): Public
-- HTTPS (port 443): Public
-
 **Docker containers:**
 - Only reachable on whitelisted ports
 - Accidental `docker run -p 3306:3306` won't expose your database
@@ -231,7 +233,36 @@ Config stored at `/etc/ssh/sshd_config.d/00-vps-hardening.conf`.
 
 ### Automatic Updates
 
-Security patches applied automatically via `unattended-upgrades`.
+Security patches applied automatically via `unattended-upgrades`:
+- Security origins (including ESM)
+- Auto-reboot at 04:00 when required (kernel updates)
+- Unused kernel packages cleaned up automatically
+
+### Kernel Tuning
+
+- `vm.swappiness=10` — Prefer keeping data in RAM
+- `vm.dirty_ratio=15` — Limit dirty page cache before forcing sync writes
+- `vm.dirty_background_ratio=5` — Start background flushing early
+
+---
+
+## Files Created/Modified
+
+| Path | Purpose |
+|------|---------|
+| `/opt/vps-setup/` | VPS operations toolkit (this repo) |
+| `/opt/proxy-nginx/` | proxy-nginx installation |
+| `/etc/vps-setup.conf` | Setup configuration |
+| `/etc/vps-setup-migrations` | Migration tracking |
+| `/etc/vps-setup-heartbeat.conf` | Heartbeat endpoint configuration |
+| `/var/log/vps-setup.log` | Operations log |
+| `/etc/ssh/sshd_config.d/00-vps-hardening.conf` | SSH hardening |
+| `/etc/sudoers.d/admin` | Passwordless sudo for admin user |
+| `/etc/iptables/rules.v4` | Saved IPv4 firewall rules |
+| `/etc/iptables/rules.v6` | Saved IPv6 firewall rules |
+| `/etc/docker/daemon.json` | Docker log rotation config |
+| `/etc/sysctl.d/99-vps-setup.conf` | Kernel parameter tuning |
+| `/etc/apt/apt.conf.d/52unattended-upgrades-vps-setup` | Unattended-upgrades config |
 
 ---
 
@@ -282,33 +313,6 @@ docker logs proxy-nginx
 
 ---
 
-## Files Created/Modified
-
-| Path | Purpose |
-|------|---------|
-| `/etc/vps-setup-commit` | Git commit hash at install time |
-| `/etc/vps-setup.conf` | Configuration (Tailscale enabled/disabled) |
-| `/etc/ssh/sshd_config.d/00-vps-hardening.conf` | SSH hardening |
-| `/etc/sudoers.d/admin` | Passwordless sudo for admin user |
-| `/etc/iptables/rules.v4` | Saved IPv4 firewall rules |
-| `/etc/iptables/rules.v6` | Saved IPv6 firewall rules |
-| `/etc/docker/daemon.json` | Docker log rotation config |
-| `/opt/proxy-nginx/` | proxy-nginx installation |
-
----
-
-## Security Summary
-
-| Layer | Protection |
-|-------|------------|
-| **SSH** | Key-only authentication, no root login |
-| **Network** | SSH via Tailscale only (by default) |
-| **Firewall** | Whitelist approach - only specified ports open |
-| **Docker** | Containers only reachable on whitelisted ports |
-| **Updates** | Automatic security patches |
-
----
-
 ## Private Container Registries
 
 If you're pulling images from private registries (like GitHub Container Registry), authenticate after setup:
@@ -325,6 +329,19 @@ echo "YOUR_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
 ```
 
 Credentials persist in `~/.docker/config.json`.
+
+---
+
+## Security Summary
+
+| Layer | Protection |
+|-------|------------|
+| **SSH** | Key-only authentication, no root login |
+| **Network** | SSH via Tailscale only (by default) |
+| **Firewall** | Whitelist approach - only specified ports open |
+| **Docker** | Containers only reachable on whitelisted ports |
+| **Updates** | Automatic security patches with auto-reboot |
+| **Kernel** | Tuned sysctl for I/O stability and memory management |
 
 ---
 

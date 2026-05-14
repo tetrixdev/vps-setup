@@ -20,6 +20,7 @@
 #   6. Creates 'admin' user with sudo and docker access
 #   7. Configures iptables firewall
 #   8. Creates swap file (if none exists)
+#   9. Installs VPS operations toolkit (update system, CLI helpers, migrations)
 #
 # PREREQUISITES:
 #   - Fresh Ubuntu 24.04 or Debian 12 server
@@ -284,7 +285,8 @@ case "$ACCESS_MODE" in
         echo "  5. Harden SSH (key-only, no root login)"
         echo "  6. Configure 'admin' user with sudo + docker access"
         echo "  7. Configure firewall (SSH via Tailscale only, web public)"
-        echo "  8. Create 2GB swap file"
+        echo "  8. Create 4GB swap file"
+        echo "  9. Install VPS operations toolkit"
         ;;
     ip-whitelist)
         log_info "IP WHITELIST MODE: Access restricted to: $IP_WHITELIST"
@@ -297,7 +299,8 @@ case "$ACCESS_MODE" in
         echo "  5. Harden SSH (key-only, no root login)"
         echo "  6. Configure 'admin' user with sudo + docker access"
         echo "  7. Configure firewall (SSH from whitelisted IPs, web public)"
-        echo "  8. Create 2GB swap file"
+        echo "  8. Create 4GB swap file"
+        echo "  9. Install VPS operations toolkit"
         ;;
     none)
         log_warn "NO RESTRICTION MODE: PocketDev will be publicly accessible"
@@ -311,7 +314,8 @@ case "$ACCESS_MODE" in
         echo "  5. Harden SSH (key-only, no root login)"
         echo "  6. Configure 'admin' user with sudo + docker access"
         echo "  7. Configure firewall (SSH, HTTP, HTTPS open)"
-        echo "  8. Create 2GB swap file"
+        echo "  8. Create 4GB swap file"
+        echo "  9. Install VPS operations toolkit"
         ;;
 esac
 echo ""
@@ -319,7 +323,7 @@ echo ""
 # =============================================================================
 # STEP 1: System Updates
 # =============================================================================
-log_step "Step 1/8: Updating system..."
+log_step "Step 1/9: Updating system..."
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -361,7 +365,7 @@ log_info "System updated, automatic security updates enabled"
 # =============================================================================
 # STEP 2: Install Docker
 # =============================================================================
-log_step "Step 2/8: Installing Docker..."
+log_step "Step 2/9: Installing Docker..."
 
 # Check if Docker is already installed
 if command -v docker &> /dev/null; then
@@ -415,7 +419,7 @@ log_info "Docker installed and configured"
 # =============================================================================
 # STEP 3: Install Proxy-Nginx
 # =============================================================================
-log_step "Step 3/8: Installing proxy-nginx..."
+log_step "Step 3/9: Installing proxy-nginx..."
 
 # Check if proxy-nginx already running
 if docker ps --format '{{.Names}}' | grep -q '^proxy-nginx$'; then
@@ -468,7 +472,7 @@ fi
 TAILSCALE_IP=""
 
 if [ "$ACCESS_MODE" = "tailscale" ]; then
-    log_step "Step 4/8: Installing Tailscale..."
+    log_step "Step 4/9: Installing Tailscale..."
 
     # Install if not present
     if ! command -v tailscale &> /dev/null; then
@@ -566,17 +570,17 @@ RELOADSCRIPT
         fi
     fi
 elif [ "$ACCESS_MODE" = "ip-whitelist" ]; then
-    log_step "Step 4/8: Skipping Tailscale (using IP whitelist)"
+    log_step "Step 4/9: Skipping Tailscale (using IP whitelist)"
     log_info "Access will be restricted to: $IP_WHITELIST"
 else
-    log_step "Step 4/8: Skipping Tailscale (no restriction)"
+    log_step "Step 4/9: Skipping Tailscale (no restriction)"
     log_warn "PocketDev will be publicly accessible. You are responsible for security."
 fi
 
 # =============================================================================
 # STEP 5: SSH Hardening
 # =============================================================================
-log_step "Step 5/8: Hardening SSH..."
+log_step "Step 5/9: Hardening SSH..."
 
 # Backup original config (only once)
 if [ ! -f /etc/ssh/sshd_config.backup ]; then
@@ -627,7 +631,7 @@ log_info "SSH hardened: password auth disabled, root login disabled"
 # =============================================================================
 # STEP 6: Configure User
 # =============================================================================
-log_step "Step 6/8: Configuring user '$USERNAME'..."
+log_step "Step 6/9: Configuring user '$USERNAME'..."
 
 if id "$USERNAME" &>/dev/null; then
     log_info "User '$USERNAME' already exists"
@@ -675,7 +679,7 @@ log_info "User '$USERNAME' configured with sudo + docker access"
 # =============================================================================
 # STEP 7: Configure Firewall (iptables)
 # =============================================================================
-log_step "Step 7/8: Configuring firewall..."
+log_step "Step 7/9: Configuring firewall..."
 
 # Install iptables-persistent (non-interactive)
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
@@ -848,14 +852,14 @@ esac
 # =============================================================================
 # STEP 8: Create Swap File
 # =============================================================================
-log_step "Step 8/8: Configuring swap..."
+log_step "Step 8/9: Configuring swap..."
 
 if [ -f /swapfile ] || [ "$(swapon --show | wc -l)" -gt 0 ]; then
     log_info "Swap already exists, skipping"
 else
-    # Create swap file (fallocate is faster, dd is fallback for unsupported filesystems)
-    if ! fallocate -l 2G /swapfile 2>/dev/null; then
-        dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
+    # Create 4GB swap file (fallocate is faster, dd is fallback for unsupported filesystems)
+    if ! fallocate -l 4G /swapfile 2>/dev/null; then
+        dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress
     fi
     chmod 600 /swapfile
     mkswap /swapfile
@@ -868,8 +872,61 @@ else
     grep -qxF 'vm.swappiness=10' /etc/sysctl.conf || echo 'vm.swappiness=10' >> /etc/sysctl.conf
     sysctl vm.swappiness=10
 
-    log_info "2GB swap file created"
+    log_info "4GB swap file created"
 fi
+
+# =============================================================================
+# STEP 9: Install VPS Operations Toolkit
+# =============================================================================
+log_step "Step 9/9: Installing VPS operations toolkit..."
+
+# Install sshpass (used by syncvolume for remote rsync)
+apt-get install -y -qq sshpass 2>/dev/null || true
+
+VPS_SETUP_DIR="/opt/vps-setup"
+
+if [ -d "$VPS_SETUP_DIR/.git" ]; then
+    log_info "VPS setup repo already present, updating..."
+    git -C "$VPS_SETUP_DIR" pull --ff-only origin main 2>/dev/null || true
+else
+    log_info "Cloning VPS setup repo..."
+    git clone https://github.com/tetrixdev/vps-setup.git "$VPS_SETUP_DIR"
+fi
+
+# Create docker-apps directory (convention for hosting multiple projects)
+mkdir -p /home/"$USERNAME"/docker-apps
+chown "$USERNAME:$USERNAME" /home/"$USERNAME"/docker-apps
+
+# Add bashrc sourcing for admin user
+BASHRC_LINE="source $VPS_SETUP_DIR/scripts/bootstrap.sh"
+
+if ! grep -qF "$BASHRC_LINE" "$USER_HOME/.bashrc" 2>/dev/null; then
+    {
+        echo ""
+        echo "# VPS Setup operations toolkit"
+        echo "# Provides: vps_update, vps_check, bashphp, bashpostgres, bashnginx, bashredis, up, down, syncvolume"
+        echo "$BASHRC_LINE"
+    } >> "$USER_HOME/.bashrc"
+    chown "$USERNAME:$USERNAME" "$USER_HOME/.bashrc"
+    log_info "Added VPS toolkit to $USERNAME's .bashrc"
+fi
+
+# Also add for root (setup.sh runs as root, future root sessions get the toolkit too)
+if ! grep -qF "$BASHRC_LINE" /root/.bashrc 2>/dev/null; then
+    {
+        echo ""
+        echo "# VPS Setup operations toolkit"
+        echo "$BASHRC_LINE"
+    } >> /root/.bashrc
+fi
+
+# Source internal functions and run initial migrations
+# shellcheck source=/dev/null
+source "$VPS_SETUP_DIR/scripts/internal.sh"
+vps_run_migrations
+vps_log "Initial setup complete" "setup.sh"
+
+log_info "VPS operations toolkit installed"
 
 # =============================================================================
 # Save configuration
@@ -901,7 +958,7 @@ echo -e "${GREEN}Setup Complete!${NC}"
 echo "============================================================================="
 echo ""
 echo "Installed:"
-echo "  ✓ Automatic security updates"
+echo "  ✓ Automatic security updates (with auto-reboot at 04:00)"
 echo "  ✓ Docker with log rotation (50MB × 5 files per container)"
 echo "  ✓ proxy-nginx reverse proxy (ports 80, 443)"
 case "$ACCESS_MODE" in
@@ -919,7 +976,8 @@ esac
 echo "  ✓ SSH: key-only, no root login"
 echo "  ✓ User 'admin' with sudo + docker"
 echo "  ✓ Firewall configured"
-echo "  ✓ 2GB swap file"
+echo "  ✓ 4GB swap file"
+echo "  ✓ VPS operations toolkit"
 echo ""
 
 case "$ACCESS_MODE" in
@@ -943,6 +1001,16 @@ case "$ACCESS_MODE" in
         ;;
 esac
 
+echo ""
+echo "Available commands (after logging in as $USERNAME):"
+echo "  vps_update     - Pull latest updates and run new migrations"
+echo "  vps_check      - Check if an update is available"
+echo "  bashphp        - Open shell in PHP container"
+echo "  bashpostgres   - Open shell in PostgreSQL container"
+echo "  bashnginx      - Open shell in nginx container"
+echo "  bashredis      - Open shell in Redis container"
+echo "  up / down      - Start/stop Docker Compose project (auto-detects project)"
+echo "  syncvolume     - Sync Docker volumes between servers"
 echo ""
 echo "Add web apps:"
 echo "  docker exec proxy-nginx /scripts/domain.sh upsert --domain=app.example.com --upstream=app-nginx"
