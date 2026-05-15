@@ -46,12 +46,17 @@ syncvolume() {
     remote_path="${remote_path%/}/"
     local_path="${local_path%/}/"
 
-    # Create local path if needed
-    sudo mkdir -p "$local_path"
+    # Detect existing ownership before creating a missing target
+    local existing_owner=""
+    if sudo test -e "$local_path"; then
+        existing_owner=$(sudo stat -c '%u:%g' "$local_path" 2>/dev/null || echo "")
+    fi
 
-    # Detect existing ownership on local path
-    local existing_owner
-    existing_owner=$(stat -c '%u:%g' "$local_path" 2>/dev/null || echo "")
+    # Create local path if needed
+    if ! sudo mkdir -p "$local_path"; then
+        echo -e "${RED}[ERROR]${NC} Failed to create $local_path"
+        return 1
+    fi
 
     # Options
     echo ""
@@ -73,7 +78,7 @@ syncvolume() {
     # Run rsync with sudo (Docker volumes are owned by root)
     local rsync_exit_code
     if [ -n "$remote_pass" ] && command -v sshpass &>/dev/null; then
-        sudo sshpass -p "$remote_pass" rsync $rsync_opts \
+        sudo SSHPASS="$remote_pass" sshpass -e rsync $rsync_opts \
             -e "ssh -o StrictHostKeyChecking=accept-new" \
             "${remote_user}@${remote_host}:${remote_path}" "$local_path"
         rsync_exit_code=$?

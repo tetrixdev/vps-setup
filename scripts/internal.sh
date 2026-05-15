@@ -116,7 +116,10 @@ vps_update() {
     echo -e "${GREEN}Updated to${NC} $new_hash"
 
     # Run any new migrations
-    vps_run_migrations
+    if ! vps_run_migrations; then
+        vps_log "Update failed: migration error ($new_hash)"
+        return 1
+    fi
 
     vps_log "Update complete ($new_hash)"
     echo -e "${GREEN}[VPS Setup]${NC} Update complete."
