@@ -22,14 +22,37 @@ migration_up() {
 # HEARTBEAT_TOKEN=your-secret-token
 EOF
         echo "Heartbeat config template created at $HEARTBEAT_CONFIG"
+        chmod 600 "$HEARTBEAT_CONFIG"
     fi
 
-    # Install cron job (every 15 minutes)
+    # Install cron job (every 15 minutes, runs as root)
+    # Design: The heartbeat cron runs as root because it needs docker access (docker ps,
+    # docker compose ps) and git access to /opt/vps-setup. The admin user has NOPASSWD:ALL
+    # sudo anyway, so running as root adds no additional blast radius.
     local CRON_LINE="*/15 * * * * /bin/bash $VPS_SETUP_DIR/scripts/heartbeat.sh >> /var/log/vps-setup.log 2>&1"
 
-    # Add to root crontab (replace any existing heartbeat entry)
-    (crontab -l 2>/dev/null | grep -v "vps-setup.*heartbeat"; echo "$CRON_LINE") | crontab -
+    # Safely merge with existing crontab (preserve existing jobs)
+    local existing_crontab=""
+    if crontab -l > /dev/null 2>&1; then
+        existing_crontab=$(crontab -l 2>/dev/null)
+    fi
+    # Remove any previous heartbeat entry, append new one
+    (echo "$existing_crontab" | grep -v "vps-setup.*heartbeat"; echo "$CRON_LINE") | crontab -
 
     echo "Heartbeat cron job installed (every 15 minutes)"
+
+    # Install logrotate configuration for vps-setup.log
+    cat > /etc/logrotate.d/vps-setup << 'LOGEOF'
+/var/log/vps-setup.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 644 root root
+}
+LOGEOF
+    echo "Logrotate configured for /var/log/vps-setup.log (weekly, keep 4 weeks)"
     echo "Configure $HEARTBEAT_CONFIG to connect to a monitoring endpoint"
 }

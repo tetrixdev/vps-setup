@@ -16,31 +16,68 @@ syncvolume() {
         echo -e "${RED}[ERROR]${NC} rsync is not installed. Install with: sudo apt-get install -y rsync"
         return 1
     fi
-    if ! command -v sshpass &>/dev/null; then
-        echo -e "${YELLOW}[WARN]${NC} sshpass not installed. You'll be prompted for password by SSH."
+    local has_sshpass=false
+    if command -v sshpass &>/dev/null; then
+        has_sshpass=true
     fi
 
     # Prompt for connection details
     read -rp "Remote server IP/hostname: " remote_host
     read -rp "Remote username [root]: " remote_user
     remote_user="${remote_user:-root}"
-    read -rsp "SSH password (leave empty for key auth): " remote_pass
+    local remote_pass=""
+    if $has_sshpass; then
+        read -rsp "SSH password (leave empty for key auth): " remote_pass
+        echo ""
+    else
+        echo -e "${YELLOW}[INFO]${NC} sshpass not installed — using key auth (SSH will prompt if needed)."
+    fi
     echo ""
-    echo ""
+
+    # Validate required inputs
+    if [ -z "$remote_host" ]; then
+        echo -e "${RED}[ERROR]${NC} Remote hostname is required."
+        return 1
+    fi
 
     read -rp "Remote path or volume name: " remote_path
     read -rp "Local path or volume name: " local_path
 
+    if [ -z "$remote_path" ]; then
+        echo -e "${RED}[ERROR]${NC} Remote path is required."
+        return 1
+    fi
+    if [ -z "$local_path" ]; then
+        echo -e "${RED}[ERROR]${NC} Local path is required."
+        return 1
+    fi
+
     # Resolve Docker volume names to paths
     if [[ "$remote_path" != /* ]]; then
+        if [[ "$remote_path" == *..* ]] || [[ "$remote_path" == */* ]]; then
+            echo -e "${RED}[ERROR]${NC} Invalid volume name: '$remote_path' (must not contain '..' or '/')"
+            return 1
+        fi
         remote_path="/var/lib/docker/volumes/${remote_path}/_data"
         echo -e "${BLUE}Resolved remote volume:${NC} $remote_path"
     fi
 
     if [[ "$local_path" != /* ]]; then
+        if [[ "$local_path" == *..* ]] || [[ "$local_path" == */* ]]; then
+            echo -e "${RED}[ERROR]${NC} Invalid volume name: '$local_path' (must not contain '..' or '/')"
+            return 1
+        fi
         local_path="/var/lib/docker/volumes/${local_path}/_data"
         echo -e "${BLUE}Resolved local volume:${NC} $local_path"
     fi
+
+    # Reject dangerous paths
+    for _path in "$remote_path" "$local_path"; do
+        if [[ "$_path" == "/" ]] || [[ "$_path" == "//" ]]; then
+            echo -e "${RED}[ERROR]${NC} Refusing to sync filesystem root. Check your paths."
+            return 1
+        fi
+    done
 
     # Ensure trailing slash for rsync (sync contents, not directory itself)
     remote_path="${remote_path%/}/"
@@ -76,6 +113,10 @@ syncvolume() {
     echo ""
 
     # Run rsync with sudo (Docker volumes are owned by root)
+    # Design: StrictHostKeyChecking=accept-new is intentional for this interactive admin
+    # tool — it trusts on first connection and verifies on subsequent ones (TOFU model).
+    # Full strict mode would require pre-distributing host keys, which is impractical for
+    # a one-off migration tool where the operator confirms the remote host interactively.
     local rsync_exit_code
     if [ -n "$remote_pass" ] && command -v sshpass &>/dev/null; then
         sudo SSHPASS="$remote_pass" sshpass -e rsync $rsync_opts \
@@ -108,8 +149,8 @@ syncvolume() {
         echo "  2) Skip (keep ownership from remote)"
         echo "  3) Custom (enter owner:group)"
         echo ""
-        read -rp "Choice [1]: " chown_choice
-        chown_choice="${chown_choice:-1}"
+        read -rp "Choice [2]: " chown_choice
+        chown_choice="${chown_choice:-2}"
 
         case "$chown_choice" in
             1)

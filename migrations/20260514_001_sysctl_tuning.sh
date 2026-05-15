@@ -12,6 +12,15 @@
 migration_up() {
     local SYSCTL_FILE="/etc/sysctl.d/99-vps-setup.conf"
 
+    # Idempotency: skip if already configured with expected values
+    if [ -f "$SYSCTL_FILE" ] && \
+       grep -q 'vm.dirty_ratio = 15' "$SYSCTL_FILE" && \
+       grep -q 'vm.dirty_background_ratio = 5' "$SYSCTL_FILE" && \
+       grep -q 'vm.swappiness = 10' "$SYSCTL_FILE"; then
+        echo "Sysctl tuning already applied, skipping"
+        return 0
+    fi
+
     # Create or update our sysctl config
     cat > "$SYSCTL_FILE" << 'EOF'
 # VPS Setup kernel tuning

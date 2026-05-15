@@ -36,7 +36,6 @@
 set -euo pipefail  # Exit on error, undefined variable, or pipeline failure
 
 CONFIG_FILE="/etc/vps-setup.conf"
-COMMIT_FILE="/etc/vps-setup-commit"
 
 # -----------------------------------------------------------------------------
 # Colors and logging
@@ -116,6 +115,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate --ip-whitelist has IPs (empty whitelist would lock out SSH entirely)
+if [ "$ACCESS_MODE" = "ip-whitelist" ] && [ -z "$IP_WHITELIST" ]; then
+    log_error "--ip-whitelist requires at least one IP address or CIDR range"
+    echo "Usage: $0 --ip-whitelist \"1.2.3.4,5.6.7.0/24\""
+    exit 1
+fi
+
 # -----------------------------------------------------------------------------
 # Pre-flight checks
 # -----------------------------------------------------------------------------
@@ -131,13 +137,23 @@ fi
 # Check for mode mismatch (prevent switching access modes)
 # -----------------------------------------------------------------------------
 if [ -f "$CONFIG_FILE" ]; then
-    # shellcheck source=/dev/null
-    source "$CONFIG_FILE"
-    STORED_MODE="${ACCESS_MODE_STORED:-}"
-    # Legacy support: convert old TAILSCALE_ENABLED to ACCESS_MODE
-    if [ -z "$STORED_MODE" ] && [ -n "${TAILSCALE_ENABLED:-}" ]; then
-        STORED_MODE=$([ "$TAILSCALE_ENABLED" = "true" ] && echo "tailscale" || echo "none")
-    fi
+    # Safe parsing: read KEY=VALUE pairs without executing as shell code
+    STORED_MODE=""
+    while IFS='=' read -r key value; do
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs | sed 's/^["'\''"]//;s/["'\''"]$//')
+        case "$key" in
+            ACCESS_MODE_STORED) STORED_MODE="$value" ;;
+            TAILSCALE_ENABLED)
+                # Legacy support: convert old TAILSCALE_ENABLED to ACCESS_MODE
+                if [ -z "$STORED_MODE" ]; then
+                    STORED_MODE=$([ "$value" = "true" ] && echo "tailscale" || echo "none")
+                fi
+                ;;
+        esac
+    done < "$CONFIG_FILE"
 
     if [ -n "$STORED_MODE" ] && [ -n "$ACCESS_MODE" ] && [ "$STORED_MODE" != "$ACCESS_MODE" ]; then
         log_error "This server was set up with access mode: $STORED_MODE"
@@ -178,10 +194,10 @@ log_info "Detected: $DISTRO_ID $DISTRO_CODENAME"
 if [ -z "$ACCESS_MODE" ]; then
     echo ""
     echo "============================================================================="
-    echo -e "${BLUE}PocketDev Access Restriction${NC}"
+    echo -e "${BLUE}Server Access Restriction${NC}"
     echo "============================================================================="
     echo ""
-    echo "We strongly recommend restricting access to PocketDev."
+    echo "We strongly recommend restricting access to your server."
     echo ""
     echo "Choose your access restriction method:"
     echo ""
@@ -197,7 +213,7 @@ if [ -z "$ACCESS_MODE" ]; then
     echo "     - You'll need to update the whitelist if your IP changes"
     echo ""
     echo -e "  ${RED}3) No restriction (NOT recommended)${NC}"
-    echo "     - PocketDev will be publicly accessible"
+    echo "     - Your server will be publicly accessible"
     echo "     - You are fully responsible for security"
     echo "     - Only choose this if you have your own security measures"
     echo ""
@@ -228,17 +244,17 @@ if [ -z "$ACCESS_MODE" ]; then
             3)
                 ACCESS_MODE="none"
                 echo ""
-                log_warn "WARNING: You are choosing to run PocketDev without access restrictions."
-                log_warn "This means ANYONE on the internet can access your PocketDev instance."
+                log_warn "WARNING: You are choosing to run your server without access restrictions."
+                log_warn "This means ANYONE on the internet can access your server."
                 echo ""
                 echo "You accept full responsibility for:"
-                echo "  - Securing your PocketDev instance"
+                echo "  - Securing your server"
                 echo "  - Any unauthorized access or data breaches"
                 echo "  - Monitoring for suspicious activity"
                 echo ""
                 read -rp "Type 'I ACCEPT' to continue: " confirm < /dev/tty
-                if [ "$confirm" != "I ACCEPT" ]; then
-                    echo "Aborting. Please choose a different option."
+                if [[ "${confirm,,}" != "i accept" ]]; then
+                    echo "Please type 'I ACCEPT' (case-insensitive) to continue."
                     continue
                 fi
                 break
@@ -303,7 +319,7 @@ case "$ACCESS_MODE" in
         echo "  9. Install VPS operations toolkit"
         ;;
     none)
-        log_warn "NO RESTRICTION MODE: PocketDev will be publicly accessible"
+        log_warn "NO RESTRICTION MODE: Server will be publicly accessible"
         log_warn "You are responsible for security!"
         echo ""
         echo "This script will:"
@@ -319,6 +335,15 @@ case "$ACCESS_MODE" in
         ;;
 esac
 echo ""
+
+echo ""
+echo -e "${RED}════════════════════════════════════════════════════════════════════════════${NC}"
+echo -e "${RED}  IMPORTANT: Root login will be disabled at the end of this setup.${NC}"
+echo -e "${RED}  Keep this session open and test 'ssh admin@<ip>' before closing!${NC}"
+echo -e "${RED}════════════════════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+read -rp "Press Enter to start setup (Ctrl+C to abort): "
 
 # =============================================================================
 # STEP 1: System Updates
@@ -430,6 +455,11 @@ else
 
     if [ -z "$PROXY_VERSION" ] || [ "$PROXY_VERSION" = "null" ]; then
         log_error "Could not fetch proxy-nginx version from GitHub"
+        exit 1
+    fi
+
+    if ! [[ "$PROXY_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        log_error "Invalid proxy-nginx version format: $PROXY_VERSION (expected X.Y.Z)"
         exit 1
     fi
 
@@ -601,9 +631,11 @@ PermitRootLogin no
 PubkeyAuthentication yes
 PermitEmptyPasswords no
 
-# Allow forwarding environment variables (for tokens, etc.)
+# Allow forwarding specific environment variables
 # Client must explicitly send with: ssh -o SendEnv=VAR_NAME
-AcceptEnv *
+# Design: Only GITHUB_TOKEN is allowed. AcceptEnv * was intentionally removed
+# to prevent env injection (e.g., BASH_ENV) on a NOPASSWD:ALL sudo account.
+AcceptEnv GITHUB_TOKEN
 EOF
 
 # Ensure privilege separation directory exists (missing on some minimal installs)
@@ -868,9 +900,7 @@ else
     # Make permanent (idempotent)
     grep -qxF '/swapfile none swap sw 0 0' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
-    # Optimize swappiness (idempotent)
-    grep -qxF 'vm.swappiness=10' /etc/sysctl.conf || echo 'vm.swappiness=10' >> /etc/sysctl.conf
-    sysctl vm.swappiness=10
+    # Note: swappiness is managed by migration 001 via /etc/sysctl.d/99-vps-setup.conf
 
     log_info "4GB swap file created"
 fi
@@ -928,7 +958,9 @@ fi
 # Source internal functions and run initial migrations
 # shellcheck source=/dev/null
 source "$VPS_SETUP_DIR/scripts/internal.sh"
-vps_run_migrations
+if ! vps_run_migrations; then
+    log_warn "Some migrations failed. Run vps_update to retry."
+fi
 vps_log "Initial setup complete" "setup.sh"
 
 log_info "VPS operations toolkit installed"
@@ -947,12 +979,6 @@ ACCESS_MODE_STORED="$ACCESS_MODE"
 IP_WHITELIST_STORED="$IP_WHITELIST"
 INSTALLED_AT="$(date -Iseconds)"
 EOF
-
-# Save the current main branch commit hash for tracking
-MAIN_COMMIT=$(curl -sf "https://api.github.com/repos/tetrixdev/vps-setup/commits/main" | grep '"sha"' | head -1 | sed 's/.*"\([a-f0-9]*\)".*/\1/')
-if [ -n "$MAIN_COMMIT" ]; then
-    echo "$MAIN_COMMIT" > "$COMMIT_FILE"
-fi
 
 # =============================================================================
 # Complete
@@ -1002,7 +1028,7 @@ case "$ACCESS_MODE" in
         echo "Connect via:"
         echo "  ssh $USERNAME@<public-ip>"
         echo ""
-        log_warn "PocketDev is publicly accessible. You are responsible for security!"
+        log_warn "Server is publicly accessible. You are responsible for security!"
         ;;
 esac
 

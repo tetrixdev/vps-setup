@@ -30,10 +30,14 @@ HEARTBEAT_TOKEN=""
 
 if [ -f "$HEARTBEAT_CONFIG" ]; then
     # Safe parsing: only read KEY=VALUE lines, no shell execution
-    while IFS='=' read -r key value; do
+    while IFS= read -r line; do
         # Skip comments and empty lines
-        [[ "$key" =~ ^[[:space:]]*# ]] && continue
-        [[ -z "$key" ]] && continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$line" ]] && continue
+        [[ "$line" != *=* ]] && continue
+
+        key="${line%%=*}"
+        value="${line#*=}"
 
         key=$(echo "$key" | xargs)
         value=$(echo "$value" | xargs | sed 's/^["'\''"]//;s/["'\''"]$//')
@@ -95,11 +99,18 @@ fi
 # Collect application data
 # ---------------------------------------------------------------------------
 APPS_JSON="[]"
-DOCKER_APPS_DIR="$HOME/docker-apps"
-if [ ! -d "$DOCKER_APPS_DIR" ]; then
-    DOCKER_APPS_DIR="/home/admin/docker-apps"
+# Resolve docker-apps directory (heartbeat runs as root via cron, so $HOME=/root)
+# Read admin username from setup config, fall back to 'admin'
+ADMIN_HOME=""
+if [ -f /etc/vps-setup.conf ]; then
+    ADMIN_HOME=$(getent passwd admin 2>/dev/null | cut -d: -f6 || echo "")
 fi
+DOCKER_APPS_DIR="${ADMIN_HOME:-/home/admin}/docker-apps"
 
+# Design: The JSON array is built manually with comma-tracking and bracket-echoing
+# rather than using `jq -s`. This is intentional — the approach works, the jq safety
+# net (| jq -c '.') at the end catches malformed output, and each app's jq call handles
+# its own data. Refactoring to jq -s would be polish without functional benefit.
 if [ -d "$DOCKER_APPS_DIR" ]; then
     APPS_JSON=$(
         echo "["
@@ -143,14 +154,9 @@ if [ -d "$DOCKER_APPS_DIR" ]; then
     APPS_JSON=$(echo "$APPS_JSON" | jq -c '.' 2>/dev/null || echo "[]")
 fi
 
-# ---------------------------------------------------------------------------
-# Collect proxy-nginx config
-# ---------------------------------------------------------------------------
-PROXY_CONFIG=""
-PROXY_CONFIG_FILE="/opt/proxy-nginx/default.conf"
-if [ -f "$PROXY_CONFIG_FILE" ]; then
-    PROXY_CONFIG=$(cat "$PROXY_CONFIG_FILE" 2>/dev/null || echo "")
-fi
+# Design: proxy_config was intentionally removed from the heartbeat payload.
+# Sending the full nginx config disclosed internal server topology (upstream names,
+# internal IPs, routing rules) to the monitoring endpoint on every heartbeat.
 
 # ---------------------------------------------------------------------------
 # Build payload
@@ -165,7 +171,6 @@ PAYLOAD=$(jq -n \
     --arg reboot_packages "$REBOOT_PACKAGES" \
     --arg unattended_enabled "$UNATTENDED_ENABLED" \
     --argjson apps "$APPS_JSON" \
-    --arg proxy_config "$PROXY_CONFIG" \
     --arg timestamp "$(date -Iseconds)" \
     '{
         hostname: $hostname,
@@ -181,7 +186,6 @@ PAYLOAD=$(jq -n \
             unattended_upgrades_enabled: ($unattended_enabled == "true")
         },
         apps: $apps,
-        proxy_config: $proxy_config,
         timestamp: $timestamp
     }'
 )

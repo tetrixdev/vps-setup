@@ -14,16 +14,35 @@ down() {
     local prefix
     prefix=$(_vps_get_container_prefix "$compose_dir") || return 1
 
-    local compose_file="$compose_dir/compose.yml"
-    if [ ! -f "$compose_file" ]; then
-        compose_file="$compose_dir/docker-compose.yml"
-    fi
+    # Warn before destroying volumes (prevents accidental data loss)
+    local arg
+    for arg in "$@"; do
+        if [[ "$arg" == "-v" ]] || [[ "$arg" == "--volumes" ]]; then
+            echo -e "${RED}WARNING: -v will permanently delete ALL volumes (databases, uploads, etc.)${NC}"
+            read -rp "Type 'yes' to confirm volume deletion: " confirm < /dev/tty
+            if [ "$confirm" != "yes" ]; then
+                echo "Aborted."
+                return 1
+            fi
+            break
+        fi
+    done
+
+    local compose_file
+    compose_file=$(_vps_find_compose_file "$compose_dir") || return 1
 
     echo -e "${BLUE}Stopping${NC} $prefix..."
 
     # For proxy-nginx, just stop directly (no Laravel lifecycle)
     if [[ "$prefix" == "proxy-nginx" ]]; then
         docker compose -f "$compose_file" down "$@"
+        echo -e "${GREEN}Stopped${NC} $prefix"
+        return 0
+    fi
+
+    # Delegate to project-level down.sh if it exists (mirrors up.sh pattern)
+    if [[ -f "$compose_dir/down.sh" ]]; then
+        (cd "$compose_dir" && bash "./down.sh" "$@") || return 1
         echo -e "${GREEN}Stopped${NC} $prefix"
         return 0
     fi
@@ -40,7 +59,10 @@ down() {
 
     # 1. Enter maintenance mode
     echo -e "${YELLOW}  Entering maintenance mode...${NC}"
-    docker exec -u www-data "${prefix}-php" php artisan down --retry=60 2>/dev/null || true
+    if ! docker exec -u www-data "${prefix}-php" php artisan down --retry=60 2>/dev/null; then
+        echo -e "${RED}  [WARN] Could not enter maintenance mode (artisan down failed)${NC}"
+        echo -e "${YELLOW}  Continuing with shutdown — app may still be serving traffic.${NC}"
+    fi
 
     # 2. Wait for transient artisan processes to finish
     local timeout=60
@@ -76,6 +98,7 @@ down() {
                 count=$(docker exec "${prefix}-redis" redis-cli ZCARD "$key" 2>/dev/null | tr -d '[:space:]' || echo "0")
                 if [ "$count" != "0" ]; then
                     echo -e "${YELLOW}  Warning: $count reserved job(s) in $key${NC}"
+                    echo -e "${YELLOW}    Reserved jobs will resume when the queue worker restarts.${NC}"
                 fi
             done <<< "$reserved_keys"
         fi

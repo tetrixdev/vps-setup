@@ -108,3 +108,33 @@ commands like `bashphp`, `up`, `down` work automatically.
 
 Prepared but inactive by default. Configure `/etc/vps-setup-heartbeat.conf` with
 a monitoring endpoint URL and token to enable. Sends server state JSON every 15 min.
+Set `HEARTBEAT_ENABLED=false` to suppress the login nag without configuring a URL.
+
+## Installation Path (`/opt/vps-setup`)
+
+The installation path is hardcoded in four files. If this ever changes, update all:
+- `scripts/bootstrap.sh` (line 10: `VPS_SETUP_DIR=`)
+- `scripts/internal.sh` (line 14: `VPS_SETUP_DIR=`)
+- `scripts/heartbeat.sh` (line 17: `VPS_SETUP_DIR=`)
+- `migrations/20260514_004_prepare_heartbeat.sh` (line 10: `local VPS_SETUP_DIR=`)
+
+## Design Decisions
+
+Documented here so future reviewers understand intentional tradeoffs:
+
+- **StrictHostKeyChecking=accept-new in syncvolume**: Trusts on first connect, verifies
+  subsequent (TOFU). Strict mode would require pre-distributing host keys, impractical
+  for an interactive one-off migration tool.
+- **Heartbeat cron runs as root**: Needs docker access and git access to /opt/vps-setup.
+  Admin has NOPASSWD:ALL sudo, so root adds no blast radius.
+- **No checksum verification for downloads**: HTTPS is sufficient for a personal VPS
+  toolkit. Maintaining checksums for every upstream release adds ongoing burden.
+- **vps_update pulls HEAD of main**: Standard usage always matches. Pinned-commit edge
+  cases are not worth the complexity of version-matching logic.
+- **SSHPASS via env var**: Only root can read /proc/pid/environ for root processes.
+  Admin already has root via NOPASSWD sudo. Acceptable for an interactive admin tool.
+- **Background vps_check may print mid-typing**: Alternatives (PROMPT_COMMAND, temp file)
+  add complexity for a minor annoyance. No data is lost.
+- **Proxy-nginx guard duplicated in bash\* files**: Each handler has intentionally
+  different behavior (bashnginx opens a shell, others error). Centralizing would
+  over-abstract a simple string comparison.

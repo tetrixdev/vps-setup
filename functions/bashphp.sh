@@ -10,5 +10,11 @@ bashphp() {
         return 1
     fi
 
-    docker exec -it -u www-data "${prefix}-php" /bin/bash
+    if ! docker ps --format '{{.Names}}' | grep -q "^${prefix}-php$"; then
+        echo -e "${RED}[ERROR]${NC} Container '${prefix}-php' is not running. Try 'up' first."
+        return 1
+    fi
+
+    docker exec -it -u www-data "${prefix}-php" /bin/bash 2>/dev/null \
+        || docker exec -it -u www-data "${prefix}-php" /bin/sh
 }

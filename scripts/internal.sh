@@ -62,10 +62,18 @@ vps_check() {
     fi
 
     # Fetch latest (suppress output, non-interactive sudo to avoid blocking login)
+    local fetch_ok=true
     if [ "$(id -u)" -eq 0 ]; then
-        git -C "$VPS_SETUP_DIR" fetch origin main --quiet 2>/dev/null || return 0
+        git -C "$VPS_SETUP_DIR" fetch origin main --quiet 2>/dev/null || fetch_ok=false
     else
-        sudo -n git -C "$VPS_SETUP_DIR" fetch origin main --quiet 2>/dev/null || return 0
+        sudo -n git -C "$VPS_SETUP_DIR" fetch origin main --quiet 2>/dev/null || fetch_ok=false
+    fi
+
+    if ! $fetch_ok; then
+        if ! $quiet; then
+            echo -e "${YELLOW}[VPS Setup]${NC} Could not reach remote — update check skipped."
+        fi
+        return 0
     fi
 
     local local_hash remote_hash
@@ -115,6 +123,15 @@ vps_update() {
     new_hash=$(git -C "$VPS_SETUP_DIR" rev-parse --short HEAD 2>/dev/null)
     echo -e "${GREEN}Updated to${NC} $new_hash"
 
+    # Show what changed
+    local old_hash
+    old_hash=$(git -C "$VPS_SETUP_DIR" rev-parse --short HEAD@{1} 2>/dev/null || echo "")
+    if [ -n "$old_hash" ] && [ "$old_hash" != "$new_hash" ]; then
+        echo ""
+        git -C "$VPS_SETUP_DIR" log --oneline "${old_hash}..HEAD" 2>/dev/null | head -20
+        echo ""
+    fi
+
     # Run any new migrations
     if ! vps_run_migrations; then
         vps_log "Update failed: migration error ($new_hash)"
@@ -162,7 +179,7 @@ vps_run_migrations() {
         filename=$(basename "$migration_file")
 
         # Skip if already recorded
-        if grep -qF "$filename" "$tracker" 2>/dev/null; then
+        if grep -qF "${filename}|" "$tracker" 2>/dev/null; then
             continue
         fi
 
@@ -237,6 +254,19 @@ _vps_traverse_to_compose() {
     return 1
 }
 
+# Resolve the compose file path in a directory (compose.yml or docker-compose.yml fallback)
+_vps_find_compose_file() {
+    local dir="$1"
+    if [ -f "$dir/compose.yml" ]; then
+        echo "$dir/compose.yml"
+    elif [ -f "$dir/docker-compose.yml" ]; then
+        echo "$dir/docker-compose.yml"
+    else
+        echo -e "${RED}[ERROR]${NC} No compose file found in $dir" >&2
+        return 1
+    fi
+}
+
 # Extract container prefix from compose.yml (e.g., "myapp" from "myapp-php")
 _vps_get_container_prefix() {
     local compose_dir="${1:-}"
@@ -246,15 +276,8 @@ _vps_get_container_prefix() {
         compose_dir=$(_vps_traverse_to_compose) || return 1
     fi
 
-    local compose_file="$compose_dir/compose.yml"
-    if [ ! -f "$compose_file" ]; then
-        compose_file="$compose_dir/docker-compose.yml"
-    fi
-
-    if [ ! -f "$compose_file" ]; then
-        echo -e "${RED}[ERROR]${NC} No compose file found in $compose_dir" >&2
-        return 1
-    fi
+    local compose_file
+    compose_file=$(_vps_find_compose_file "$compose_dir") || return 1
 
     # Special case: proxy-nginx
     if grep -q 'proxy-nginx' "$compose_file" 2>/dev/null && [ "$(basename "$compose_dir")" = "proxy-nginx" ]; then
@@ -269,6 +292,9 @@ _vps_get_container_prefix() {
     if [ -n "$container_name" ]; then
         # Strip the last -service part (e.g., "myapp-php" -> "myapp")
         local prefix="${container_name%-*}"
+        if [ "$prefix" = "$container_name" ]; then
+            echo -e "${YELLOW}[WARN]${NC} container_name '$container_name' has no dash — expected format: prefix-service (e.g., myapp-php)" >&2
+        fi
         echo "$prefix"
         return 0
     fi

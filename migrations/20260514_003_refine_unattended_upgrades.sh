@@ -12,6 +12,14 @@
 # - Validates config with a dry-run before finalizing.
 
 migration_up() {
+    # Idempotency: skip if our override already exists with expected content
+    if [ -f /etc/apt/apt.conf.d/52unattended-upgrades-vps-setup ] && \
+       grep -q 'Automatic-Reboot "true"' /etc/apt/apt.conf.d/52unattended-upgrades-vps-setup && \
+       grep -q 'Automatic-Reboot-Time "04:00"' /etc/apt/apt.conf.d/52unattended-upgrades-vps-setup; then
+        echo "Unattended-upgrades already configured, skipping"
+        return 0
+    fi
+
     # Install reboot-required tracking
     if ! apt-get install -y -qq update-notifier-common; then
         echo "Failed to install update-notifier-common" >&2
@@ -29,7 +37,9 @@ Unattended-Upgrade::Allowed-Origins {
     "${distro_id}ESM:${distro_codename}-infra-security";
 };
 
-// Auto-reboot at 4:00 AM when required (e.g., kernel updates)
+// Auto-reboot at 4:00 AM server local time when required (e.g., kernel updates)
+// Note: this is server local time, typically UTC on freshly provisioned servers.
+// Adjust this value or set the system timezone (timedatectl set-timezone) as needed.
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "04:00";
 
@@ -38,12 +48,29 @@ Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 EOF
 
+    echo ""
+    echo -e "\033[1;33m╔══════════════════════════════════════════════════════════════════╗\033[0m"
+    echo -e "\033[1;33m║  NOTICE: Automatic server reboot at 04:00 (server local time)   ║\033[0m"
+    echo -e "\033[1;33m║  has been enabled for kernel security updates.                   ║\033[0m"
+    echo -e "\033[1;33m║  Edit /etc/apt/apt.conf.d/52unattended-upgrades-vps-setup        ║\033[0m"
+    echo -e "\033[1;33m║  to change the reboot time or disable auto-reboot.               ║\033[0m"
+    echo -e "\033[1;33m╚══════════════════════════════════════════════════════════════════╝\033[0m"
+    echo ""
+
     # Remove our old 50-* file if it exists and was written by setup.sh
     # (Check for our marker: AutoFixInterruptedDpkg, which Ubuntu's default doesn't have)
     if [ -f /etc/apt/apt.conf.d/50unattended-upgrades ]; then
         if grep -q 'AutoFixInterruptedDpkg' /etc/apt/apt.conf.d/50unattended-upgrades 2>/dev/null; then
             rm -f /etc/apt/apt.conf.d/50unattended-upgrades
             echo "Removed old setup.sh unattended-upgrades config (replaced by 52-* override)"
+        fi
+    fi
+
+    # Notify if existing custom configuration will be overwritten
+    if [ -f /etc/apt/apt.conf.d/20auto-upgrades ]; then
+        if grep -q 'Unattended-Upgrade "0"' /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null; then
+            echo -e "\033[1;33m[NOTICE]\033[0m Overwriting 20auto-upgrades which had automatic upgrades disabled."
+            echo "  If this was intentional, re-disable after this migration completes."
         fi
     fi
 
@@ -59,8 +86,10 @@ AUTOEOF
         local dry_run_output
         dry_run_output=$(unattended-upgrade --dry-run 2>&1 || true)
         if echo "$dry_run_output" | grep -qi "error"; then
-            echo "Warning: unattended-upgrades dry-run reported errors:"
-            echo "$dry_run_output" | grep -i "error" | head -5
+            echo "Unattended-upgrades dry-run reported errors:" >&2
+            echo "$dry_run_output" | grep -i "error" | head -5 >&2
+            echo "Fix the config conflict and retry via vps_update." >&2
+            return 1
         else
             echo "Unattended-upgrades config validated (dry-run passed)"
         fi

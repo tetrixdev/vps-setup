@@ -35,15 +35,21 @@ unset _vps_func_file
 
 # Show heartbeat status
 if [ -f /etc/vps-setup-heartbeat.conf ]; then
-    if grep -q '^HEARTBEAT_URL=' /etc/vps-setup-heartbeat.conf 2>/dev/null; then
+    if grep -qE '^[[:space:]]*HEARTBEAT_URL=' /etc/vps-setup-heartbeat.conf 2>/dev/null; then
         : # Heartbeat configured, all good
+    elif grep -qE '^[[:space:]]*HEARTBEAT_ENABLED=[[:space:]]*false' /etc/vps-setup-heartbeat.conf 2>/dev/null; then
+        : # Heartbeat explicitly disabled, suppress nag
     else
         echo -e "${YELLOW}[VPS Setup]${NC} Heartbeat not connected. Edit /etc/vps-setup-heartbeat.conf to enable monitoring."
+        echo -e "${YELLOW}           ${NC} To silence this message, add: HEARTBEAT_ENABLED=false"
     fi
 fi
 
 # Check for updates (background, non-blocking)
 # Only runs if this is an interactive login shell
+# Design: Background output may appear mid-typing if an update is available.
+# Alternatives (PROMPT_COMMAND, temp file) add complexity for a minor annoyance.
+# The operator simply retypes their command; no data is lost.
 if [[ $- == *i* ]]; then
     ( vps_check --quiet ) &
 fi
