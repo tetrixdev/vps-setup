@@ -936,6 +936,13 @@ else
     git clone https://github.com/tetrixdev/vps-setup.git "$VPS_SETUP_DIR"
 fi
 
+# Trust the repo for all users. It is owned by root (cloned here as root), but
+# the admin user runs git-based commands (vps_check). Without this, git aborts
+# non-root operations with a "dubious ownership" error.
+if ! git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$VPS_SETUP_DIR"; then
+    git config --system --add safe.directory "$VPS_SETUP_DIR"
+fi
+
 # Create docker-apps directory (convention for hosting multiple projects)
 mkdir -p "$USER_HOME/docker-apps"
 chown "$USERNAME:$USERNAME" "$USER_HOME/docker-apps"
