@@ -302,24 +302,3 @@ _vps_get_container_prefix() {
     # Fallback: use directory name
     basename "$compose_dir"
 }
-
-# Execute a command in the PHP container
-_vps_exec_php() {
-    local prefix
-    prefix=$(_vps_get_container_prefix) || return 1
-    docker exec -u www-data "${prefix}-php" "$@"
-}
-
-# Execute an artisan command in the PHP container
-_vps_artisan() {
-    _vps_exec_php php artisan "$@"
-}
-
-# Execute artisan in a specific compose directory's project
-_vps_artisan_in() {
-    local compose_dir="$1"
-    shift
-    local prefix
-    prefix=$(_vps_get_container_prefix "$compose_dir") || return 1
-    docker exec -u www-data "${prefix}-php" php artisan "$@"
-}

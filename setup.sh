@@ -115,6 +115,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Track whether access mode came from a flag (non-interactive run)
+NONINTERACTIVE=false
+[ -n "$ACCESS_MODE" ] && NONINTERACTIVE=true
+
 # Validate --ip-whitelist has IPs (empty whitelist would lock out SSH entirely)
 if [ "$ACCESS_MODE" = "ip-whitelist" ] && [ -z "$IP_WHITELIST" ]; then
     log_error "--ip-whitelist requires at least one IP address or CIDR range"
@@ -343,7 +347,11 @@ echo -e "${RED}  Keep this session open and test 'ssh admin@<ip>' before closing
 echo -e "${RED}════════════════════════════════════════════════════════════════════════════${NC}"
 echo ""
 
-read -rp "Press Enter to start setup (Ctrl+C to abort): "
+# Confirmation prompt — read from /dev/tty so it works under `curl | bash`.
+# Skipped for non-interactive runs (access mode supplied via flag) or when no tty.
+if [ "$NONINTERACTIVE" = false ] && [ -e /dev/tty ]; then
+    read -rp "Press Enter to start setup (Ctrl+C to abort): " < /dev/tty
+fi
 
 # =============================================================================
 # STEP 1: System Updates
@@ -604,7 +612,7 @@ elif [ "$ACCESS_MODE" = "ip-whitelist" ]; then
     log_info "Access will be restricted to: $IP_WHITELIST"
 else
     log_step "Step 4/9: Skipping Tailscale (no restriction)"
-    log_warn "PocketDev will be publicly accessible. You are responsible for security."
+    log_warn "Your server will be publicly accessible. You are responsible for security."
 fi
 
 # =============================================================================
@@ -1057,7 +1065,7 @@ if [ "$ACCESS_MODE" = "tailscale" ]; then
     echo "CoreDNS is running on $TAILSCALE_IP:53"
     echo "Apps using Tailscale restriction will register their domains automatically."
     echo ""
-    echo "When you install apps (e.g., PocketDev) with Tailscale restriction:"
+    echo "When you install apps with Tailscale restriction:"
     echo "  1. The app will register its domain in CoreDNS"
     echo "  2. You'll see instructions to configure Tailscale admin"
     echo ""

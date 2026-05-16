@@ -94,7 +94,7 @@ A heartbeat script runs every 15 minutes via cron, collecting server state (cont
 
 ### Tailscale (Recommended)
 
-Zero-trust network access. SSH and PocketDev only accessible via your Tailscale network.
+Zero-trust network access. SSH and your apps only accessible via your Tailscale network.
 
 **Pros:**
 - Works with dynamic IPs (mobile, home internet)
@@ -118,7 +118,7 @@ Restrict access to specific IP addresses or CIDR ranges.
 
 ### No Restriction
 
-PocketDev publicly accessible. **Not recommended.**
+Your server publicly accessible. **Not recommended.**
 
 ---
 
