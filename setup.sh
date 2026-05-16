@@ -20,6 +20,7 @@
 #   6. Creates 'admin' user with sudo and docker access
 #   7. Configures iptables firewall
 #   8. Creates swap file (if none exists)
+#   9. Installs VPS operations toolkit (update system, CLI helpers, migrations)
 #
 # PREREQUISITES:
 #   - Fresh Ubuntu 24.04 or Debian 12 server
@@ -35,7 +36,6 @@
 set -euo pipefail  # Exit on error, undefined variable, or pipeline failure
 
 CONFIG_FILE="/etc/vps-setup.conf"
-COMMIT_FILE="/etc/vps-setup-commit"
 
 # -----------------------------------------------------------------------------
 # Colors and logging
@@ -115,6 +115,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Track whether access mode came from a flag (non-interactive run)
+NONINTERACTIVE=false
+[ -n "$ACCESS_MODE" ] && NONINTERACTIVE=true
+
+# Validate --ip-whitelist has IPs (empty whitelist would lock out SSH entirely)
+if [ "$ACCESS_MODE" = "ip-whitelist" ] && [ -z "$IP_WHITELIST" ]; then
+    log_error "--ip-whitelist requires at least one IP address or CIDR range"
+    echo "Usage: $0 --ip-whitelist \"1.2.3.4,5.6.7.0/24\""
+    exit 1
+fi
+
 # -----------------------------------------------------------------------------
 # Pre-flight checks
 # -----------------------------------------------------------------------------
@@ -130,13 +141,23 @@ fi
 # Check for mode mismatch (prevent switching access modes)
 # -----------------------------------------------------------------------------
 if [ -f "$CONFIG_FILE" ]; then
-    # shellcheck source=/dev/null
-    source "$CONFIG_FILE"
-    STORED_MODE="${ACCESS_MODE_STORED:-}"
-    # Legacy support: convert old TAILSCALE_ENABLED to ACCESS_MODE
-    if [ -z "$STORED_MODE" ] && [ -n "${TAILSCALE_ENABLED:-}" ]; then
-        STORED_MODE=$([ "$TAILSCALE_ENABLED" = "true" ] && echo "tailscale" || echo "none")
-    fi
+    # Safe parsing: read KEY=VALUE pairs without executing as shell code
+    STORED_MODE=""
+    while IFS='=' read -r key value; do
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs | sed 's/^["'\''"]//;s/["'\''"]$//')
+        case "$key" in
+            ACCESS_MODE_STORED) STORED_MODE="$value" ;;
+            TAILSCALE_ENABLED)
+                # Legacy support: convert old TAILSCALE_ENABLED to ACCESS_MODE
+                if [ -z "$STORED_MODE" ]; then
+                    STORED_MODE=$([ "$value" = "true" ] && echo "tailscale" || echo "none")
+                fi
+                ;;
+        esac
+    done < "$CONFIG_FILE"
 
     if [ -n "$STORED_MODE" ] && [ -n "$ACCESS_MODE" ] && [ "$STORED_MODE" != "$ACCESS_MODE" ]; then
         log_error "This server was set up with access mode: $STORED_MODE"
@@ -177,10 +198,10 @@ log_info "Detected: $DISTRO_ID $DISTRO_CODENAME"
 if [ -z "$ACCESS_MODE" ]; then
     echo ""
     echo "============================================================================="
-    echo -e "${BLUE}PocketDev Access Restriction${NC}"
+    echo -e "${BLUE}Server Access Restriction${NC}"
     echo "============================================================================="
     echo ""
-    echo "We strongly recommend restricting access to PocketDev."
+    echo "We strongly recommend restricting access to your server."
     echo ""
     echo "Choose your access restriction method:"
     echo ""
@@ -196,7 +217,7 @@ if [ -z "$ACCESS_MODE" ]; then
     echo "     - You'll need to update the whitelist if your IP changes"
     echo ""
     echo -e "  ${RED}3) No restriction (NOT recommended)${NC}"
-    echo "     - PocketDev will be publicly accessible"
+    echo "     - Your server will be publicly accessible"
     echo "     - You are fully responsible for security"
     echo "     - Only choose this if you have your own security measures"
     echo ""
@@ -227,17 +248,17 @@ if [ -z "$ACCESS_MODE" ]; then
             3)
                 ACCESS_MODE="none"
                 echo ""
-                log_warn "WARNING: You are choosing to run PocketDev without access restrictions."
-                log_warn "This means ANYONE on the internet can access your PocketDev instance."
+                log_warn "WARNING: You are choosing to run your server without access restrictions."
+                log_warn "This means ANYONE on the internet can access your server."
                 echo ""
                 echo "You accept full responsibility for:"
-                echo "  - Securing your PocketDev instance"
+                echo "  - Securing your server"
                 echo "  - Any unauthorized access or data breaches"
                 echo "  - Monitoring for suspicious activity"
                 echo ""
                 read -rp "Type 'I ACCEPT' to continue: " confirm < /dev/tty
-                if [ "$confirm" != "I ACCEPT" ]; then
-                    echo "Aborting. Please choose a different option."
+                if [[ "${confirm,,}" != "i accept" ]]; then
+                    echo "Please type 'I ACCEPT' (case-insensitive) to continue."
                     continue
                 fi
                 break
@@ -284,7 +305,8 @@ case "$ACCESS_MODE" in
         echo "  5. Harden SSH (key-only, no root login)"
         echo "  6. Configure 'admin' user with sudo + docker access"
         echo "  7. Configure firewall (SSH via Tailscale only, web public)"
-        echo "  8. Create 2GB swap file"
+        echo "  8. Create 4GB swap file"
+        echo "  9. Install VPS operations toolkit"
         ;;
     ip-whitelist)
         log_info "IP WHITELIST MODE: Access restricted to: $IP_WHITELIST"
@@ -297,10 +319,11 @@ case "$ACCESS_MODE" in
         echo "  5. Harden SSH (key-only, no root login)"
         echo "  6. Configure 'admin' user with sudo + docker access"
         echo "  7. Configure firewall (SSH from whitelisted IPs, web public)"
-        echo "  8. Create 2GB swap file"
+        echo "  8. Create 4GB swap file"
+        echo "  9. Install VPS operations toolkit"
         ;;
     none)
-        log_warn "NO RESTRICTION MODE: PocketDev will be publicly accessible"
+        log_warn "NO RESTRICTION MODE: Server will be publicly accessible"
         log_warn "You are responsible for security!"
         echo ""
         echo "This script will:"
@@ -311,15 +334,29 @@ case "$ACCESS_MODE" in
         echo "  5. Harden SSH (key-only, no root login)"
         echo "  6. Configure 'admin' user with sudo + docker access"
         echo "  7. Configure firewall (SSH, HTTP, HTTPS open)"
-        echo "  8. Create 2GB swap file"
+        echo "  8. Create 4GB swap file"
+        echo "  9. Install VPS operations toolkit"
         ;;
 esac
 echo ""
 
+echo ""
+echo -e "${RED}════════════════════════════════════════════════════════════════════════════${NC}"
+echo -e "${RED}  IMPORTANT: Root login will be disabled at the end of this setup.${NC}"
+echo -e "${RED}  Keep this session open and test 'ssh admin@<ip>' before closing!${NC}"
+echo -e "${RED}════════════════════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+# Confirmation prompt — read from /dev/tty so it works under `curl | bash`.
+# Skipped for non-interactive runs (access mode supplied via flag) or when no tty.
+if [ "$NONINTERACTIVE" = false ] && [ -e /dev/tty ]; then
+    read -rp "Press Enter to start setup (Ctrl+C to abort): " < /dev/tty
+fi
+
 # =============================================================================
 # STEP 1: System Updates
 # =============================================================================
-log_step "Step 1/8: Updating system..."
+log_step "Step 1/9: Updating system..."
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -361,7 +398,7 @@ log_info "System updated, automatic security updates enabled"
 # =============================================================================
 # STEP 2: Install Docker
 # =============================================================================
-log_step "Step 2/8: Installing Docker..."
+log_step "Step 2/9: Installing Docker..."
 
 # Check if Docker is already installed
 if command -v docker &> /dev/null; then
@@ -415,7 +452,7 @@ log_info "Docker installed and configured"
 # =============================================================================
 # STEP 3: Install Proxy-Nginx
 # =============================================================================
-log_step "Step 3/8: Installing proxy-nginx..."
+log_step "Step 3/9: Installing proxy-nginx..."
 
 # Check if proxy-nginx already running
 if docker ps --format '{{.Names}}' | grep -q '^proxy-nginx$'; then
@@ -426,6 +463,11 @@ else
 
     if [ -z "$PROXY_VERSION" ] || [ "$PROXY_VERSION" = "null" ]; then
         log_error "Could not fetch proxy-nginx version from GitHub"
+        exit 1
+    fi
+
+    if ! [[ "$PROXY_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        log_error "Invalid proxy-nginx version format: $PROXY_VERSION (expected X.Y.Z)"
         exit 1
     fi
 
@@ -468,7 +510,7 @@ fi
 TAILSCALE_IP=""
 
 if [ "$ACCESS_MODE" = "tailscale" ]; then
-    log_step "Step 4/8: Installing Tailscale..."
+    log_step "Step 4/9: Installing Tailscale..."
 
     # Install if not present
     if ! command -v tailscale &> /dev/null; then
@@ -566,17 +608,17 @@ RELOADSCRIPT
         fi
     fi
 elif [ "$ACCESS_MODE" = "ip-whitelist" ]; then
-    log_step "Step 4/8: Skipping Tailscale (using IP whitelist)"
+    log_step "Step 4/9: Skipping Tailscale (using IP whitelist)"
     log_info "Access will be restricted to: $IP_WHITELIST"
 else
-    log_step "Step 4/8: Skipping Tailscale (no restriction)"
-    log_warn "PocketDev will be publicly accessible. You are responsible for security."
+    log_step "Step 4/9: Skipping Tailscale (no restriction)"
+    log_warn "Your server will be publicly accessible. You are responsible for security."
 fi
 
 # =============================================================================
 # STEP 5: SSH Hardening
 # =============================================================================
-log_step "Step 5/8: Hardening SSH..."
+log_step "Step 5/9: Hardening SSH..."
 
 # Backup original config (only once)
 if [ ! -f /etc/ssh/sshd_config.backup ]; then
@@ -597,9 +639,11 @@ PermitRootLogin no
 PubkeyAuthentication yes
 PermitEmptyPasswords no
 
-# Allow forwarding environment variables (for tokens, etc.)
+# Allow forwarding specific environment variables
 # Client must explicitly send with: ssh -o SendEnv=VAR_NAME
-AcceptEnv *
+# Design: Only GITHUB_TOKEN is allowed. AcceptEnv * was intentionally removed
+# to prevent env injection (e.g., BASH_ENV) on a NOPASSWD:ALL sudo account.
+AcceptEnv GITHUB_TOKEN
 EOF
 
 # Ensure privilege separation directory exists (missing on some minimal installs)
@@ -627,7 +671,7 @@ log_info "SSH hardened: password auth disabled, root login disabled"
 # =============================================================================
 # STEP 6: Configure User
 # =============================================================================
-log_step "Step 6/8: Configuring user '$USERNAME'..."
+log_step "Step 6/9: Configuring user '$USERNAME'..."
 
 if id "$USERNAME" &>/dev/null; then
     log_info "User '$USERNAME' already exists"
@@ -675,7 +719,7 @@ log_info "User '$USERNAME' configured with sudo + docker access"
 # =============================================================================
 # STEP 7: Configure Firewall (iptables)
 # =============================================================================
-log_step "Step 7/8: Configuring firewall..."
+log_step "Step 7/9: Configuring firewall..."
 
 # Install iptables-persistent (non-interactive)
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
@@ -848,14 +892,14 @@ esac
 # =============================================================================
 # STEP 8: Create Swap File
 # =============================================================================
-log_step "Step 8/8: Configuring swap..."
+log_step "Step 8/9: Configuring swap..."
 
 if [ -f /swapfile ] || [ "$(swapon --show | wc -l)" -gt 0 ]; then
     log_info "Swap already exists, skipping"
 else
-    # Create swap file (fallocate is faster, dd is fallback for unsupported filesystems)
-    if ! fallocate -l 2G /swapfile 2>/dev/null; then
-        dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
+    # Create 4GB swap file (fallocate is faster, dd is fallback for unsupported filesystems)
+    if ! fallocate -l 4G /swapfile 2>/dev/null; then
+        dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress
     fi
     chmod 600 /swapfile
     mkswap /swapfile
@@ -864,12 +908,70 @@ else
     # Make permanent (idempotent)
     grep -qxF '/swapfile none swap sw 0 0' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
-    # Optimize swappiness (idempotent)
-    grep -qxF 'vm.swappiness=10' /etc/sysctl.conf || echo 'vm.swappiness=10' >> /etc/sysctl.conf
-    sysctl vm.swappiness=10
+    # Note: swappiness is managed by migration 001 via /etc/sysctl.d/99-vps-setup.conf
 
-    log_info "2GB swap file created"
+    log_info "4GB swap file created"
 fi
+
+# =============================================================================
+# STEP 9: Install VPS Operations Toolkit
+# =============================================================================
+log_step "Step 9/9: Installing VPS operations toolkit..."
+
+# Install sshpass (used by syncvolume for remote rsync)
+if ! apt-get install -y -qq sshpass; then
+    log_warn "sshpass installation failed. syncvolume will require manual password entry."
+fi
+
+VPS_SETUP_DIR="/opt/vps-setup"
+
+if [ -d "$VPS_SETUP_DIR/.git" ]; then
+    log_info "VPS setup repo already present, updating..."
+    if ! git -C "$VPS_SETUP_DIR" pull --ff-only origin main; then
+        log_error "Failed to update $VPS_SETUP_DIR. Resolve the repo state and rerun setup."
+        exit 1
+    fi
+else
+    log_info "Cloning VPS setup repo..."
+    git clone https://github.com/tetrixdev/vps-setup.git "$VPS_SETUP_DIR"
+fi
+
+# Create docker-apps directory (convention for hosting multiple projects)
+mkdir -p "$USER_HOME/docker-apps"
+chown "$USERNAME:$USERNAME" "$USER_HOME/docker-apps"
+
+# Add bashrc sourcing for admin user
+BASHRC_LINE="source $VPS_SETUP_DIR/scripts/bootstrap.sh"
+
+if ! grep -qF "$BASHRC_LINE" "$USER_HOME/.bashrc" 2>/dev/null; then
+    {
+        echo ""
+        echo "# VPS Setup operations toolkit"
+        echo "# Provides: vps_update, vps_check, bashphp, bashpostgres, bashnginx, bashredis, up, down, syncvolume"
+        echo "$BASHRC_LINE"
+    } >> "$USER_HOME/.bashrc"
+    chown "$USERNAME:$USERNAME" "$USER_HOME/.bashrc"
+    log_info "Added VPS toolkit to $USERNAME's .bashrc"
+fi
+
+# Also add for root (setup.sh runs as root, future root sessions get the toolkit too)
+if ! grep -qF "$BASHRC_LINE" /root/.bashrc 2>/dev/null; then
+    {
+        echo ""
+        echo "# VPS Setup operations toolkit"
+        echo "$BASHRC_LINE"
+    } >> /root/.bashrc
+fi
+
+# Source internal functions and run initial migrations
+# shellcheck source=/dev/null
+source "$VPS_SETUP_DIR/scripts/internal.sh"
+if ! vps_run_migrations; then
+    log_warn "Some migrations failed. Run vps_update to retry."
+fi
+vps_log "Initial setup complete" "setup.sh"
+
+log_info "VPS operations toolkit installed"
 
 # =============================================================================
 # Save configuration
@@ -886,12 +988,6 @@ IP_WHITELIST_STORED="$IP_WHITELIST"
 INSTALLED_AT="$(date -Iseconds)"
 EOF
 
-# Save the current main branch commit hash for tracking
-MAIN_COMMIT=$(curl -sf "https://api.github.com/repos/tetrixdev/vps-setup/commits/main" | grep '"sha"' | head -1 | sed 's/.*"\([a-f0-9]*\)".*/\1/')
-if [ -n "$MAIN_COMMIT" ]; then
-    echo "$MAIN_COMMIT" > "$COMMIT_FILE"
-fi
-
 # =============================================================================
 # Complete
 # =============================================================================
@@ -901,7 +997,7 @@ echo -e "${GREEN}Setup Complete!${NC}"
 echo "============================================================================="
 echo ""
 echo "Installed:"
-echo "  ✓ Automatic security updates"
+echo "  ✓ Automatic security updates (with auto-reboot at 04:00)"
 echo "  ✓ Docker with log rotation (50MB × 5 files per container)"
 echo "  ✓ proxy-nginx reverse proxy (ports 80, 443)"
 case "$ACCESS_MODE" in
@@ -919,7 +1015,8 @@ esac
 echo "  ✓ SSH: key-only, no root login"
 echo "  ✓ User 'admin' with sudo + docker"
 echo "  ✓ Firewall configured"
-echo "  ✓ 2GB swap file"
+echo "  ✓ 4GB swap file"
+echo "  ✓ VPS operations toolkit"
 echo ""
 
 case "$ACCESS_MODE" in
@@ -939,10 +1036,20 @@ case "$ACCESS_MODE" in
         echo "Connect via:"
         echo "  ssh $USERNAME@<public-ip>"
         echo ""
-        log_warn "PocketDev is publicly accessible. You are responsible for security!"
+        log_warn "Server is publicly accessible. You are responsible for security!"
         ;;
 esac
 
+echo ""
+echo "Available commands (after logging in as $USERNAME):"
+echo "  vps_update     - Pull latest updates and run new migrations"
+echo "  vps_check      - Check if an update is available"
+echo "  bashphp        - Open shell in PHP container"
+echo "  bashpostgres   - Open shell in PostgreSQL container"
+echo "  bashnginx      - Open shell in nginx container"
+echo "  bashredis      - Open shell in Redis container"
+echo "  up / down      - Start/stop Docker Compose project (auto-detects project)"
+echo "  syncvolume     - Sync Docker volumes between servers"
 echo ""
 echo "Add web apps:"
 echo "  docker exec proxy-nginx /scripts/domain.sh upsert --domain=app.example.com --upstream=app-nginx"
@@ -958,7 +1065,7 @@ if [ "$ACCESS_MODE" = "tailscale" ]; then
     echo "CoreDNS is running on $TAILSCALE_IP:53"
     echo "Apps using Tailscale restriction will register their domains automatically."
     echo ""
-    echo "When you install apps (e.g., PocketDev) with Tailscale restriction:"
+    echo "When you install apps with Tailscale restriction:"
     echo "  1. The app will register its domain in CoreDNS"
     echo "  2. You'll see instructions to configure Tailscale admin"
     echo ""
