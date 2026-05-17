@@ -19,7 +19,7 @@ vps-setup/
 │   ├── up.sh                # Start a Docker Compose project
 │   ├── down.sh              # Graceful shutdown (Laravel-aware)
 │   ├── syncvolume.sh        # Rsync Docker volumes between servers
-│   └── ghlogin.sh           # Authenticate the GitHub CLI (gh)
+│   └── ghsetup.sh           # Configure GitHub integration (git, gh, ghcr.io)
 ├── templates/               # Files rendered onto servers
 │   └── claude-context.md    # Managed block of the admin user's CLAUDE.md
 └── migrations/              # Incremental server config changes
@@ -104,6 +104,24 @@ same function once.
 
 To change what servers receive, edit `templates/claude-context.md` — the next
 `vps_update` picks it up. Do not add a new migration for content changes.
+
+## GitHub Integration
+
+A single GitHub token authenticates three things — git push over HTTPS, the
+`gh` CLI, and docker pulls from ghcr.io. `functions/ghsetup.sh` (the `ghsetup`
+command) configures all three, plus the git author identity, for the current
+user.
+
+- `setup.sh` accepts `--github-token` / `--git-name` / `--git-email` (or the
+  `GITHUB_TOKEN` env var), prompts for them interactively, and runs `ghsetup`
+  as the admin user after migrations (so `gh` is already installed).
+- `migrations/20260517_002_install_gh.sh` installs `gh` itself.
+- `_vps_github_nag()` (internal.sh, called from bootstrap.sh) reminds on
+  interactive login if any of the three is unconfigured. It only reports
+  current state — it is not tied to setup. Silenced once configured, or with
+  `touch ~/.vps-setup-no-github-nag`.
+
+The token needs the `repo`, `read:packages` and `read:org` scopes.
 
 ## Swap Policy
 

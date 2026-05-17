@@ -18,9 +18,10 @@ Toolkit source: `/opt/vps-setup/`. Operations log: `/var/log/vps-setup.log`.
 
 ## GitHub CLI
 
-`gh` is installed. If `gh auth status` shows it is not logged in, run `ghlogin`
-— it reuses the token git already uses (or `$GH_TOKEN`). Once authenticated,
-`gh pr`, `gh issue`, `gh repo` etc. all work non-interactively.
+`gh` is installed. If `gh auth status` shows it is not logged in, run `ghsetup`
+and supply a GitHub token — it wires up git push, the `gh` CLI, and ghcr.io in
+one step. Once authenticated, `gh pr`, `gh issue`, `gh repo` etc. all work
+non-interactively.
 
 ## Working with app containers
 

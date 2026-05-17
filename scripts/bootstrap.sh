@@ -45,11 +45,13 @@ if [ -f /etc/vps-setup-heartbeat.conf ]; then
     fi
 fi
 
-# Check for updates (background, non-blocking)
-# Only runs if this is an interactive login shell
+# Interactive-login reminders and update check
 # Design: Background output may appear mid-typing if an update is available.
 # Alternatives (PROMPT_COMMAND, temp file) add complexity for a minor annoyance.
 # The operator simply retypes their command; no data is lost.
 if [[ $- == *i* ]]; then
+    # Remind if GitHub integration (git/gh/ghcr.io) is not fully configured
+    _vps_github_nag
+    # Check for updates (background, non-blocking)
     ( vps_check --quiet ) &
 fi

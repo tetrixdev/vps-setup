@@ -368,3 +368,39 @@ _vps_get_container_prefix() {
     # Fallback: use directory name
     basename "$compose_dir"
 }
+
+# =============================================================================
+# GitHub Integration Status
+# =============================================================================
+
+# Print a one-line reminder on interactive login when GitHub integration is not
+# fully configured for this user. This is independent of how the server was set
+# up — it simply reports current state. Silenced once everything is configured,
+# or explicitly with: touch ~/.vps-setup-no-github-nag
+_vps_github_nag() {
+    [ -f "$HOME/.vps-setup-no-github-nag" ] && return 0
+
+    local missing=()
+
+    if [ -z "$(git config --global user.email 2>/dev/null)" ]; then
+        missing+=("git identity")
+    fi
+
+    if command -v gh > /dev/null 2>&1 && ! gh auth status > /dev/null 2>&1; then
+        missing+=("gh login")
+    fi
+
+    if command -v docker > /dev/null 2>&1 \
+        && ! grep -q 'ghcr\.io' "$HOME/.docker/config.json" 2>/dev/null; then
+        missing+=("ghcr.io login")
+    fi
+
+    [ ${#missing[@]} -eq 0 ] && return 0
+
+    local list
+    printf -v list '%s, ' "${missing[@]}"
+    list="${list%, }"
+
+    echo -e "${YELLOW}[VPS Setup]${NC} GitHub not fully configured ($list). Run ${GREEN}ghsetup${NC} to connect."
+    echo -e "${YELLOW}           ${NC} To silence this message: touch ~/.vps-setup-no-github-nag"
+}
