@@ -9,7 +9,7 @@ vps-setup/
 ├── setup.sh                 # Initial server provisioning (run once via curl)
 ├── scripts/
 │   ├── bootstrap.sh         # Sourced on login via .bashrc (loads all functions)
-│   ├── internal.sh          # Core: vps_update, vps_check, vps_run_migrations, helpers
+│   ├── internal.sh          # Core: vps_update, vps_check, migrations, claude-context sync
 │   └── heartbeat.sh         # Server health reporting (cron, every 15 min)
 ├── functions/               # User-facing shell commands
 │   ├── bashphp.sh           # Open shell in PHP container
@@ -18,7 +18,10 @@ vps-setup/
 │   ├── bashredis.sh         # Open shell in Redis container
 │   ├── up.sh                # Start a Docker Compose project
 │   ├── down.sh              # Graceful shutdown (Laravel-aware)
-│   └── syncvolume.sh        # Rsync Docker volumes between servers
+│   ├── syncvolume.sh        # Rsync Docker volumes between servers
+│   └── ghlogin.sh           # Authenticate the GitHub CLI (gh)
+├── templates/               # Files rendered onto servers
+│   └── claude-context.md    # Managed block of the admin user's CLAUDE.md
 └── migrations/              # Incremental server config changes
     ├── YYYYMMDD_NNN_*.sh    # Timestamped, idempotent migration scripts
     └── .gitkeep
@@ -84,8 +87,23 @@ migration_up() {
 ## Update System
 
 - `vps_check`: Fetches origin/main, shows if update available
-- `vps_update`: `git pull` + `vps_run_migrations()` (auto-escalates to sudo)
+- `vps_update`: `git pull` + `vps_run_migrations()` + `_vps_sync_claude_context()` (auto-escalates to sudo)
 - On login: `vps_check --quiet` runs automatically (only shows message if update available)
+
+## Claude Context File
+
+`templates/claude-context.md` is rendered into the admin user's `~/CLAUDE.md` so
+any Claude Code session on the server starts with the ops cheatsheet.
+
+`_vps_sync_claude_context()` (internal.sh) writes the template between
+`<!-- vps-setup:managed:start -->` / `<!-- vps-setup:managed:end -->` markers and
+runs on every `vps_update`. Only the managed block is replaced — anything below
+the end marker is operator-owned and never touched. Migration
+`20260517_001_deploy_claude_md.sh` performs the initial rollout by calling the
+same function once.
+
+To change what servers receive, edit `templates/claude-context.md` — the next
+`vps_update` picks it up. Do not add a new migration for content changes.
 
 ## Swap Policy
 

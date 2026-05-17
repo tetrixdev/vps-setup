@@ -45,8 +45,10 @@ After setup, the following commands are available on login:
 |---------|-------------|
 | `vps_update` | Pull latest updates and run new migrations |
 | `vps_check` | Check if an update is available |
+| `ghlogin` | Authenticate the GitHub CLI (`gh`), reusing an existing token where possible |
 
-Updates are checked automatically on every SSH login.
+Updates are checked automatically on every SSH login. The GitHub CLI (`gh`) is
+installed by a migration; run `ghlogin` once to authenticate it.
 
 ### Container Helpers
 
@@ -252,6 +254,7 @@ Security patches applied automatically via `unattended-upgrades`:
 |------|---------|
 | `/opt/vps-setup/` | VPS operations toolkit (this repo) |
 | `/opt/proxy-nginx/` | proxy-nginx installation |
+| `~/CLAUDE.md` (admin user) | Claude Code server-operations context |
 | `/etc/vps-setup.conf` | Setup configuration |
 | `/etc/vps-setup-migrations` | Migration tracking |
 | `/etc/vps-setup-heartbeat.conf` | Heartbeat endpoint configuration |
