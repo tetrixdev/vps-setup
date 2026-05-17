@@ -45,8 +45,11 @@ After setup, the following commands are available on login:
 |---------|-------------|
 | `vps_update` | Pull latest updates and run new migrations |
 | `vps_check` | Check if an update is available |
+| `ghsetup` | Connect git push, the `gh` CLI and ghcr.io using a GitHub token |
 
-Updates are checked automatically on every SSH login.
+Updates are checked automatically on every SSH login. The GitHub CLI (`gh`) is
+installed by a migration; run `ghsetup` (or supply a token during setup) to
+connect git, `gh` and ghcr.io.
 
 ### Container Helpers
 
@@ -129,6 +132,9 @@ Your server publicly accessible. **Not recommended.**
 | `--tailscale` | Use Tailscale (non-interactive) |
 | `--ip-whitelist IPs` | Use IP whitelist (comma-separated IPs/CIDRs) |
 | `--no-restriction` | No access restriction (not recommended) |
+| `--github-token TOKEN` | GitHub PAT to connect git push, `gh` and ghcr.io (optional) |
+| `--git-name NAME` | Git author name (used with `--github-token`) |
+| `--git-email EMAIL` | Git author email (used with `--github-token`) |
 | `-h, --help` | Show help |
 
 ### Examples
@@ -252,6 +258,7 @@ Security patches applied automatically via `unattended-upgrades`:
 |------|---------|
 | `/opt/vps-setup/` | VPS operations toolkit (this repo) |
 | `/opt/proxy-nginx/` | proxy-nginx installation |
+| `~/CLAUDE.md` (admin user) | Claude Code server-operations context |
 | `/etc/vps-setup.conf` | Setup configuration |
 | `/etc/vps-setup-migrations` | Migration tracking |
 | `/etc/vps-setup-heartbeat.conf` | Heartbeat endpoint configuration |
@@ -315,16 +322,21 @@ docker logs proxy-nginx
 
 ## Private Container Registries
 
-If you're pulling images from private registries (like GitHub Container Registry), authenticate after setup:
-
 ### GitHub Container Registry (ghcr.io)
 
-```bash
-# Forward token via SSH (recommended)
-ssh -o SendEnv=GITHUB_TOKEN admin@server \
-  'echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin'
+The simplest path is `ghsetup` — from a single GitHub token it logs Docker into
+ghcr.io and also connects git push and the `gh` CLI:
 
-# Or manual login
+```bash
+ghsetup   # prompts for a token
+```
+
+You can also supply the token at install time with `--github-token` (or the
+`GITHUB_TOKEN` env var), and `setup.sh` does the same wiring automatically.
+
+To log in to ghcr.io by hand instead:
+
+```bash
 echo "YOUR_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
 ```
 

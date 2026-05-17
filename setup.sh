@@ -28,6 +28,7 @@
 #
 # ENVIRONMENT VARIABLES:
 #   TAILSCALE_KEY    - Auth key for unattended Tailscale setup
+#   GITHUB_TOKEN     - GitHub PAT to connect git push, the gh CLI and ghcr.io
 #
 # REPOSITORY: https://github.com/tetrixdev/vps-setup
 #
@@ -59,6 +60,10 @@ ACCESS_MODE=""
 IP_WHITELIST=""
 TAILSCALE_KEY="${TAILSCALE_KEY:-}"
 USERNAME="admin"
+# Optional GitHub integration (git push, gh CLI, ghcr.io) — all skipped if blank
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+GIT_NAME=""
+GIT_EMAIL=""
 
 show_help() {
     echo "Usage: $0 [options]"
@@ -67,10 +72,14 @@ show_help() {
     echo "  --tailscale           Use Tailscale for access restriction (recommended)"
     echo "  --ip-whitelist IPs    Use IP-based restriction (comma-separated IPs/CIDRs)"
     echo "  --no-restriction      No access restriction (NOT recommended)"
+    echo "  --github-token TOKEN  GitHub PAT to connect git push, gh and ghcr.io (optional)"
+    echo "  --git-name NAME       Git author name (used with --github-token)"
+    echo "  --git-email EMAIL     Git author email (used with --github-token)"
     echo "  -h, --help            Show this help message"
     echo ""
     echo "Environment variables:"
     echo "  TAILSCALE_KEY         Auth key for unattended Tailscale setup"
+    echo "  GITHUB_TOKEN          GitHub PAT (alternative to --github-token)"
     echo ""
     echo "Examples:"
     echo "  $0                                      # Interactive mode"
@@ -101,6 +110,27 @@ while [[ $# -gt 0 ]]; do
         --no-tailscale)
             # Legacy flag support
             ACCESS_MODE="none"
+            shift
+            ;;
+        --github-token)
+            if [[ -n "${2:-}" ]] && [[ ! "$2" =~ ^-- ]]; then
+                GITHUB_TOKEN="$2"
+                shift
+            fi
+            shift
+            ;;
+        --git-name)
+            if [[ -n "${2:-}" ]] && [[ ! "$2" =~ ^-- ]]; then
+                GIT_NAME="$2"
+                shift
+            fi
+            shift
+            ;;
+        --git-email)
+            if [[ -n "${2:-}" ]] && [[ ! "$2" =~ ^-- ]]; then
+                GIT_EMAIL="$2"
+                shift
+            fi
             shift
             ;;
         -h|--help)
@@ -268,6 +298,33 @@ if [ -z "$ACCESS_MODE" ]; then
                 ;;
         esac
     done
+    echo ""
+fi
+
+# -----------------------------------------------------------------------------
+# Optional: GitHub integration
+# -----------------------------------------------------------------------------
+# A GitHub token connects git push (HTTPS), the gh CLI, and ghcr.io private
+# image pulls in one go. Entirely optional; prompted only on interactive runs
+# when a token was not already supplied via --github-token / GITHUB_TOKEN.
+if [ -z "$GITHUB_TOKEN" ] && [ "$NONINTERACTIVE" = false ] && [ -e /dev/tty ]; then
+    echo ""
+    echo "============================================================================="
+    echo -e "${BLUE}GitHub Integration (optional)${NC}"
+    echo "============================================================================="
+    echo ""
+    echo "Provide a GitHub token to connect git push, the gh CLI, and ghcr.io"
+    echo "(private container images) for the '$USERNAME' user. Leave blank to skip."
+    echo ""
+    echo "Use a Personal Access Token with scopes: repo, read:packages, read:org"
+    echo "Create one at: https://github.com/settings/tokens"
+    echo ""
+    read -rsp "GitHub token (blank to skip): " GITHUB_TOKEN < /dev/tty || true
+    echo ""
+    if [ -n "$GITHUB_TOKEN" ]; then
+        read -rp "Git author name: " GIT_NAME < /dev/tty || true
+        read -rp "Git author email: " GIT_EMAIL < /dev/tty || true
+    fi
     echo ""
 fi
 
@@ -980,6 +1037,23 @@ vps_log "Initial setup complete" "setup.sh"
 
 log_info "VPS operations toolkit installed"
 
+# -----------------------------------------------------------------------------
+# Optional: GitHub integration (git push, gh CLI, ghcr.io) for the admin user
+# -----------------------------------------------------------------------------
+# Runs after migrations so the gh CLI is already installed. ghsetup runs as the
+# admin user so credentials land in the admin home; the token is passed through
+# the environment (never on the command line).
+if [ -n "$GITHUB_TOKEN" ]; then
+    log_step "Configuring GitHub access for '$USERNAME'..."
+    if GITHUB_TOKEN="$GITHUB_TOKEN" GIT_NAME="$GIT_NAME" GIT_EMAIL="$GIT_EMAIL" \
+        sudo -u "$USERNAME" -H --preserve-env=GITHUB_TOKEN,GIT_NAME,GIT_EMAIL \
+        bash -c "source '$VPS_SETUP_DIR/scripts/internal.sh'; source '$VPS_SETUP_DIR/functions/ghsetup.sh'; ghsetup --noninteractive"; then
+        log_info "GitHub access configured"
+    else
+        log_warn "GitHub setup did not finish — run 'ghsetup' after logging in as $USERNAME."
+    fi
+fi
+
 # =============================================================================
 # Save configuration
 # =============================================================================
@@ -1024,6 +1098,9 @@ echo "  ✓ User 'admin' with sudo + docker"
 echo "  ✓ Firewall configured"
 echo "  ✓ 4GB swap file"
 echo "  ✓ VPS operations toolkit"
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo "  ✓ GitHub access for $USERNAME (git push, gh CLI, ghcr.io)"
+fi
 echo ""
 
 case "$ACCESS_MODE" in
@@ -1057,6 +1134,7 @@ echo "  bashnginx      - Open shell in nginx container"
 echo "  bashredis      - Open shell in Redis container"
 echo "  up / down      - Start/stop Docker Compose project (auto-detects project)"
 echo "  syncvolume     - Sync Docker volumes between servers"
+echo "  ghsetup        - Connect git, gh and ghcr.io using a GitHub token"
 echo ""
 echo "Add web apps:"
 echo "  docker exec proxy-nginx /scripts/domain.sh upsert --domain=app.example.com --upstream=app-nginx"

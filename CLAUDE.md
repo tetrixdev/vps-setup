@@ -9,7 +9,7 @@ vps-setup/
 ├── setup.sh                 # Initial server provisioning (run once via curl)
 ├── scripts/
 │   ├── bootstrap.sh         # Sourced on login via .bashrc (loads all functions)
-│   ├── internal.sh          # Core: vps_update, vps_check, vps_run_migrations, helpers
+│   ├── internal.sh          # Core: vps_update, vps_check, migrations, claude-context sync
 │   └── heartbeat.sh         # Server health reporting (cron, every 15 min)
 ├── functions/               # User-facing shell commands
 │   ├── bashphp.sh           # Open shell in PHP container
@@ -18,7 +18,10 @@ vps-setup/
 │   ├── bashredis.sh         # Open shell in Redis container
 │   ├── up.sh                # Start a Docker Compose project
 │   ├── down.sh              # Graceful shutdown (Laravel-aware)
-│   └── syncvolume.sh        # Rsync Docker volumes between servers
+│   ├── syncvolume.sh        # Rsync Docker volumes between servers
+│   └── ghsetup.sh           # Configure GitHub integration (git, gh, ghcr.io)
+├── templates/               # Files rendered onto servers
+│   └── claude-context.md    # Managed block of the admin user's CLAUDE.md
 └── migrations/              # Incremental server config changes
     ├── YYYYMMDD_NNN_*.sh    # Timestamped, idempotent migration scripts
     └── .gitkeep
@@ -84,8 +87,41 @@ migration_up() {
 ## Update System
 
 - `vps_check`: Fetches origin/main, shows if update available
-- `vps_update`: `git pull` + `vps_run_migrations()` (auto-escalates to sudo)
+- `vps_update`: `git pull` + `vps_run_migrations()` + `_vps_sync_claude_context()` (auto-escalates to sudo)
 - On login: `vps_check --quiet` runs automatically (only shows message if update available)
+
+## Claude Context File
+
+`templates/claude-context.md` is rendered into the admin user's `~/CLAUDE.md` so
+any Claude Code session on the server starts with the ops cheatsheet.
+
+`_vps_sync_claude_context()` (internal.sh) writes the template between
+`<!-- vps-setup:managed:start -->` / `<!-- vps-setup:managed:end -->` markers and
+runs on every `vps_update`. Only the managed block is replaced — anything below
+the end marker is operator-owned and never touched. Migration
+`20260517_001_deploy_claude_md.sh` performs the initial rollout by calling the
+same function once.
+
+To change what servers receive, edit `templates/claude-context.md` — the next
+`vps_update` picks it up. Do not add a new migration for content changes.
+
+## GitHub Integration
+
+A single GitHub token authenticates three things — git push over HTTPS, the
+`gh` CLI, and docker pulls from ghcr.io. `functions/ghsetup.sh` (the `ghsetup`
+command) configures all three, plus the git author identity, for the current
+user.
+
+- `setup.sh` accepts `--github-token` / `--git-name` / `--git-email` (or the
+  `GITHUB_TOKEN` env var), prompts for them interactively, and runs `ghsetup`
+  as the admin user after migrations (so `gh` is already installed).
+- `migrations/20260517_002_install_gh.sh` installs `gh` itself.
+- `_vps_github_nag()` (internal.sh, called from bootstrap.sh) reminds on
+  interactive login if any of the three is unconfigured. It only reports
+  current state — it is not tied to setup. Silenced once configured, or with
+  `touch ~/.vps-setup-no-github-nag`.
+
+The token needs the `repo`, `read:packages` and `read:org` scopes.
 
 ## Swap Policy
 
