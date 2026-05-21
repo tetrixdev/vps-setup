@@ -135,3 +135,26 @@ script can still manage them, then run `nginx -t` and reload.
 - Don't switch the access-restriction mode; vps-setup blocks this by design.
 - The firewall only exposes whitelisted ports — expose app ports through
   proxy-nginx, not by publishing host ports.
+
+## Project stacks (dev servers)
+
+On dev servers hosting several related repos, group them as a "stack" so a new
+Claude session can orient itself without re-exploring the code:
+
+- Create `~/Repositories/_stacks/<stack-name>/` containing:
+  - `README.md` — stable overview: what the stack is, the repos that compose
+    it, and the primary + intermediate goal(s).
+  - `sessions/` — one short markdown file per work session
+    (`YYYY-MM-DD-slug.md`); a running history of what was done.
+  - `tasks/` — a kanban board: one markdown file per task, in `open/`,
+    `doing/`, or `done/`. The folder a file sits in is the task's state.
+- Index each stack in the operator-owned part of this server's `~/CLAUDE.md`
+  (below the managed block) under a `### Stacks` heading.
+- When working on a stack: at the start, read its `README.md`, the latest ~10
+  `sessions/` files, and everything in `tasks/open/` + `tasks/doing/`. Move
+  task files between folders as work progresses. At a natural stopping point,
+  offer to write a `sessions/` summary (write it only once confirmed) — there
+  is no automated trigger for `/clear` or compaction.
+
+This is a convention, not enforced infrastructure — no scripts depend on it,
+and prod servers typically won't need it.
