@@ -135,3 +135,43 @@ script can still manage them, then run `nginx -t` and reload.
 - Don't switch the access-restriction mode; vps-setup blocks this by design.
 - The firewall only exposes whitelisted ports — expose app ports through
   proxy-nginx, not by publishing host ports.
+
+## Project stacks (dev servers)
+
+On dev servers hosting several related repos, group them as a "stack" so a new
+Claude session can orient itself without re-exploring the code.
+
+**Before starting development or review work in a repo**, check the `### Stacks`
+index (the operator adds it below the managed block of this file). If the repo
+belongs to a stack, orient yourself from its tracking files first:
+
+- `README.md` — read in full.
+- `sessions/` — read the latest ~10 files in full.
+- `tasks/doing/` — read every file in full; this is the active work.
+- `tasks/open/` — do **not** bulk-read; the backlog can be dozens of files.
+  Scan one line per task with
+  `grep -H -m1 -e '^title:' -e '^goal:' tasks/open/*.md`, then open in full
+  only the individual tasks the work actually touches.
+
+A stack lives at `~/Repositories/_stacks/<stack-name>/`:
+
+- `README.md` — stable overview: what the stack is, the repos that compose it,
+  and the primary + intermediate goal(s).
+- `sessions/` — one markdown file per work session (`YYYY-MM-DD-slug.md`);
+  a running history of what was done, ~1-2 tight paragraphs each.
+- `tasks/` — a kanban board: one markdown file per task, in `open/`, `doing/`,
+  or `done/`. The folder a file sits in is the task's state. Each task has a
+  `title:` in its frontmatter so the backlog can be scanned a line at a time.
+
+When creating or updating a stack, follow the file formats in the worked
+example at `/opt/vps-setup/templates/project-stack/`. Once a server has real
+stacks, prefer copying the pattern of its existing `_stacks/` files over the
+example. Index each stack in the operator-owned part of this server's
+`~/CLAUDE.md` under a `### Stacks` heading.
+
+Move task files between folders as work progresses. At a natural stopping
+point, offer to write a `sessions/` summary (write it only once confirmed) —
+there is no automated trigger for `/clear` or compaction.
+
+This is a convention, not enforced infrastructure — no scripts depend on it,
+and prod servers typically won't need it.
