@@ -13,6 +13,10 @@ The operator owns the structure; tests and an AI reviewer own the lines.
 - **Business language, not code.** Mermaid diagrams + plain prose. Technical
   enough to matter (e.g. "the response streams"), without the low-level
   mechanism.
+- **Mirror, not roadmap.** These describe what *is built*, never what's
+  *planned*. Unbuilt design and roadmaps live in a separate design/vision corpus
+  — a field that exists only in the vision is a *gap* (migrate it, or note it
+  there), not a mirror entry.
 - **Grow on signal — don't pre-create.** A topic starts as a section inside
   `ARCHITECTURE.md` and graduates to its own doc only when it's referenced
   repeatedly, keeps causing questions, or outgrows ~one screen.

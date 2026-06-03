@@ -199,10 +199,18 @@ repo (e.g. its `docs/`).
 Before building a feature or system, make sure these exist and are current.
 **Update them in the same change that alters the structure** — a structural
 change with stale docs is an incomplete change. They are written in business
-language (Mermaid diagrams + plain prose), never code, and stay honest: where a
-cheap automated check is possible (e.g. a test that the real schema matches
-`DATA-MODEL.md`), add it, and when it fails decide which is wrong — the doc
-(design changed) or the code (it drifted).
+language (Mermaid diagrams + plain prose), never code.
+
+**They mirror what *is built*, never what is *planned*.** Roadmaps and
+not-yet-built design belong in a separate design/vision corpus (e.g. a project's
+`docs/game-design/`), never in DATA-MODEL/ARCHITECTURE. A table or field that
+exists only in the vision is a *gap* — migrate it (then mirror it) or note it in
+the design corpus; it is not a mirror entry. The two doc kinds coexist with
+different jobs and are not merged: the design corpus is "what it should be"; the
+mirror is "what it is". Keep them honest — where a cheap automated check is
+possible (e.g. a test that the real schema matches `DATA-MODEL.md`), add it, and
+when it fails decide which is wrong: the doc (design changed) or the code (it
+drifted).
 
 ### Grow the doc set on signal — don't pre-create
 
