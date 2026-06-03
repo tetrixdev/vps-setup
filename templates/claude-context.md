@@ -175,3 +175,78 @@ there is no automated trigger for `/clear` or compaction.
 
 This is a convention, not enforced infrastructure — no scripts depend on it,
 and prod servers typically won't need it.
+
+## Development method
+
+How software is built on this server, so any session works the way the operator
+expects. The governing idea: **the operator reviews the structure, not the
+lines.** Automated tests and an AI reviewer cover correctness; the human owns
+the architecture and the product vision.
+
+### Docs are the contract
+
+Every project keeps two living docs the operator reviews *instead of* the code.
+Skeletons and a "how to read these" live in
+`/opt/vps-setup/templates/project-docs/`; the filled-in docs live in the project
+repo (e.g. its `docs/`).
+
+- **`DATA-MODEL.md`** — the nouns: tables, their fields and types, and how they
+  relate.
+- **`ARCHITECTURE.md`** — the verbs: components, the key flows, and **Boundaries**
+  (every place data crosses into a subsystem we don't fully control — an LLM
+  prompt, an external API, a generated query, a serialized event).
+
+Before building a feature or system, make sure these exist and are current.
+**Update them in the same change that alters the structure** — a structural
+change with stale docs is an incomplete change. They are written in business
+language (Mermaid diagrams + plain prose), never code, and stay honest: where a
+cheap automated check is possible (e.g. a test that the real schema matches
+`DATA-MODEL.md`), add it, and when it fails decide which is wrong — the doc
+(design changed) or the code (it drifted).
+
+### Grow the doc set on signal — don't pre-create
+
+A topic starts as a *section* inside `ARCHITECTURE.md` and graduates to its own
+doc only when it earns it: the operator keeps asking about it, we keep getting
+it wrong, or it outgrows ~one screen. The same signal that promotes a section to
+a file is the one that justifies a doc at all. Don't invent docs nobody needs.
+
+### The build loop
+
+For each feature or fix:
+
+1. Build it.
+2. Write and run automated tests; then **actually run the thing** yourself to
+   confirm it behaves.
+3. Spawn a reviewer subagent and iterate until it is clean. The reviewer checks
+   the change *against the docs* — does it match `DATA-MODEL.md`/`ARCHITECTURE.md`,
+   and if it changed the structure, did it update them? Cap the rounds; escalate
+   to the operator any *structural* disagreement.
+4. Only then hand the operator a review, in the format below.
+
+### Review hand-back format
+
+Always this shape, one screen, structure first, business language (assume the
+operator does not read the code). Keep each item to **1–4 lines** (4 is the high
+end).
+
+- **Structural delta** — "No structural change", or what changed in the docs +
+  a link to the doc diff. The operator reads this first.
+- **Your calls (≤3)** — decisions only the operator can make; one line each plus
+  your recommendation. Product, gameplay, and architecture choices always
+  escalate here, to protect the operator's vision.
+- **Manual test** — only if automated tests don't cover it: exact copy-paste
+  steps and the expected result, plus the easiest way the result gets back (if
+  logs/DB exist, retrieve it yourself; the operator only flags anomalies).
+- **Automated** — tests added and pass count; reviewer verdict (rounds, what it
+  caught).
+
+Describe any issue with its **realistic scenario + impact**, so the operator can
+judge whether it's worth fixing at all.
+
+### Where this lives
+
+This method and the doc skeletons are project-agnostic and ship from vps-setup
+(this file + `templates/project-docs/`). Operator preferences belong in
+auto-memory. Bespoke plan/develop/review *skills* are deferred until the method
+has proven itself on a real project — convention first, automation later.
