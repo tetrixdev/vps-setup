@@ -199,7 +199,10 @@ repo (e.g. its `docs/`).
 Before building a feature or system, make sure these exist and are current.
 **Update them in the same change that alters the structure** — a structural
 change with stale docs is an incomplete change. They are written in business
-language (Mermaid diagrams + plain prose), never code.
+language — plain-prose tables and diagrams — never code. Make the
+**human-reviewed** representation the guarded one: when a diagram and a prose
+table carry the same facts, guard the prose (it reviews and diffs more cleanly)
+and treat the diagram as an optional picture, not a second source of truth.
 
 **They mirror what *is built*, never what is *planned*.** Roadmaps and
 not-yet-built design belong in a separate design/vision corpus (e.g. a project's
@@ -218,6 +221,105 @@ A topic starts as a *section* inside `ARCHITECTURE.md` and graduates to its own
 doc only when it earns it: the operator keeps asking about it, we keep getting
 it wrong, or it outgrows ~one screen. The same signal that promotes a section to
 a file is the one that justifies a doc at all. Don't invent docs nobody needs.
+
+### Reviewing AI-authored change — modes, not file-by-file
+
+When a change is large and AI-authored, the operator cannot read every line and
+must not have to. Every reviewable surface is assigned a **review mode** that
+says how the operator gains confidence in it without reading it all. Five modes,
+cheapest first:
+
+1. **Skip.** Not reviewed — it carries no operator-meaningful risk, or another
+   surface covers it transitively. Migration *files* (the schema they produce is
+   reviewed via its mirror), seeders/static data, generated code, unit-test
+   bodies. Declared explicitly, so "skipped" never silently means "forgotten".
+2. **Behavioural.** Confirmed by *observing it run* — a feature test plus the
+   operator using the app — because correctness lives in behaviour, not in a file
+   (views/UX, forms, end-to-end flows). The feature test is the durable form;
+   manual play is the final check.
+3. **Direct read.** A human or reviewer subagent reads the actual files — for
+   **irreducible logic** no smaller artifact captures. Every direct-read surface
+   is **explicitly enumerated in the surface register** (below); if the operator
+   has to *discover* what needs reading, the mode has failed and you are back to
+   reading everything.
+4. **Direct + companion doc + agent verification.** When direct-read logic also
+   needs a written companion (a flow, a boundary, a contract) but **no automated
+   test can prove the doc true** — e.g. `ARCHITECTURE.md` — the guard is a
+   **verification subagent**: on each review it reads the companion doc against
+   the code changes over *the operator's intended comparison* (the merge target,
+   e.g. branch→main — NOT just what's uncommitted) and reports any drift. A soft
+   guard, but a guard.
+5. **Mirror + guard.** A unified, human-friendly doc plus an **automated test**
+   proving it matches reality. Reserved for **repeating patterns** where the same
+   element recurs enough that a doc + test pays for itself (the schema; a family
+   of similar jobs once abstracted; any pattern of roughly a dozen-plus alike).
+
+**The iron rule (modes 4 & 5 alike): an unguarded claim is a hope.** A mirror
+with no passing alignment test, a companion doc no agent re-verifies, or a
+behaviour no feature test pins — all are prose trusted on faith, and prose
+drifts. The guard ships in the *same change* as the thing it guards, never
+"later".
+
+### The escalation ladder — and when to build a new mirror
+
+A surface climbs only as far as it needs:
+
+- one or two files of unique logic → **Direct read** (just read them);
+- that logic grows or needs a flow/contract explained → **Direct + companion doc
+  + agent verification**;
+- **the same shape recurs** (many tables, many fields, many near-identical
+  commands) → **Mirror + guard**.
+
+The trigger to add a new mirror is **a repeating pattern**, not raw file count.
+Where the repetition is hidden behind dissimilar code (say, several artisan
+commands that all perform a one-way sync), first introduce an **abstraction a
+human would recognise** — a "one-way sync" base with named inputs and outputs —
+then mirror+guard the family. The abstraction must map to a concept the operator
+holds in their head; a purely technical decomposition (a "JSON-to-HTML renderer"
+shattered into ten collaborators) buys nothing for review and is the wrong kind.
+Codify the rule for the AI: **when a pattern repeats, lift it into a
+human-meaningful structure and promote it to mirror+guard.**
+
+### Non-human actors are review surfaces too
+
+When agents, jobs or integrations — not just people — read and write the data
+model, their **capabilities are a surface**. Give each non-human actor its own
+doc declaring: which tables/fields it may read and write, the field-level
+instructions it is handed (the prompt-side guidance), and the validation that
+applies to *its* writes. Locate these where they **vary**: if every actor gets
+the same field instructions, they can live with the model; if they differ per
+actor (one agent creates a full record, another only a hollow stub the next
+fills in), they belong in the per-actor doc, not smeared across the model.
+Front-end validation is then **Behavioural**, with a verification subagent
+confirming it matches the server-side rules.
+
+### The surface register
+
+Each project keeps a **surface register** in `docs/CONVENTIONS.md`: every
+reviewable surface, its mode, and its guard (the test, or the doc + agent that
+verifies it). The register is what tells the operator *exactly* what to read and
+what is covered for them — the antidote to "read all the files". Framework-
+standard structures get default modes (the Laravel table below); project business
+logic is split into its own sections the same way, and climbs the same ladder.
+
+**Laravel structures — default modes** (the framework baseline every project on
+this server starts from):
+
+| Structure | Default mode |
+|---|---|
+| Migration files | **Skip** — the schema they produce is reviewed via its mirror |
+| Schema (as data) | **Mirror+guard** — `DATA-MODEL.md` prose tables + a schema-drift test |
+| Models — data shape | **Mirror+guard** — fields → `DATA-MODEL.md` |
+| Models — methods / events | **Direct read** — and **listed in the register** so they're findable |
+| Routes (+ their middleware/guards) | **Mirror+guard** — a generated route+middleware list, asserted (catches an unguarded route) |
+| Form Requests / validation | **Per-actor doc + agent verification** where it varies by actor; **Behavioural** for the form itself |
+| Controllers | **Direct read** while thin; business logic inside escalates the ladder |
+| Blade / JS / CSS (views) | **Behavioural** |
+| Events / Listeners | **Mirror** (the who-fires-what flow) + **Direct** (handler logic) |
+| Jobs / queue / scheduled / console commands | The ladder: one → Direct(+doc); a family → abstract + Mirror+guard. Add **scale-shaped tests + observability** when behaviour is scale-dependent (fine on 10 rows, wrong on 10,000) |
+| Services / Actions / domain logic | **Direct read** (enumerated in the register) |
+| Config (behaviour-driving) | **Mirror**; else **Skip** |
+| Seeders / static data, unit-test bodies | **Skip** |
 
 ### The build loop
 
@@ -255,6 +357,8 @@ judge whether it's worth fixing at all.
 ### Where this lives
 
 This method and the doc skeletons are project-agnostic and ship from vps-setup
-(this file + `templates/project-docs/`). Operator preferences belong in
+(this file + `templates/project-docs/`). Each project's **surface register** —
+its reviewable surfaces, their modes, and their guards — lives in that project's
+`docs/CONVENTIONS.md`, beside the code it governs. Operator preferences belong in
 auto-memory. Bespoke plan/develop/review *skills* are deferred until the method
 has proven itself on a real project — convention first, automation later.
